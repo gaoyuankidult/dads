@@ -60,10 +60,11 @@
 --reduced_observation=2
 
 # define the type of skills being learnt
---num_skills=3
+--num_skills=20
 --skill_type=cont_uniform
 --random_skills=100
---num_evals=10
+--num_evals=1
+
 # this parameter only works when the skill_type is cont_uniform. it will make the evaluation evenly sample the uniform distribution 
 --cont_uniform_method=evenly  
 
