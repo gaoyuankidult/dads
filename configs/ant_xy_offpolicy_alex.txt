@@ -64,6 +64,9 @@
 --skill_type=cont_uniform
 --random_skills=100
 --num_evals=10
+# this parameter only works when the skill_type is cont_uniform. it will make the evaluation evenly sample the uniform distribution 
+--cont_uniform_method=evenly  
+
 
 # (optional) policy, critic and skill dynamics
 --hidden_layer_size=512

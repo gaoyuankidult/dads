@@ -676,7 +676,7 @@ def run_on_env(env,
   else:
     return extrinsic_reward
 
-
+# evaluation loop within training
 def eval_loop(eval_dir,
               eval_policy,
               dynamics=None,
@@ -715,7 +715,11 @@ def eval_loop(eval_dir,
         preset_skill = np.random.multivariate_normal(
             np.zeros(FLAGS.num_skills), np.eye(FLAGS.num_skills))
       elif FLAGS.skill_type == 'cont_uniform':
-        preset_skill = np.random.uniform(
+        if FLAGS.cont_uniform_method == 'evenly':
+          print("Evaluation method is selected to be 'evenly'.")
+          preset_skill = np.linspace(-1.0, 1.0, FLAGS.num_skills)
+        else:
+          preset_skill = np.random.uniform(
             low=-1.0, high=1.0, size=FLAGS.num_skills)
       elif FLAGS.skill_type == 'multivariate_bernoulli':
         preset_skill = np.random.binomial(1, 0.5, size=FLAGS.num_skills)
@@ -1519,7 +1523,7 @@ def main(_):
             episode_size_buffer = [0]
             episode_return_buffer = [0.]
 
-          # within train loop evaluation
+          # within train loop evaluation IMPORTANT
           if FLAGS.record_freq is not None and iter_count % FLAGS.record_freq == 0:
             cur_vid_dir = os.path.join(log_dir, 'videos', str(iter_count))
             tf.io.gfile.makedirs(cur_vid_dir)
