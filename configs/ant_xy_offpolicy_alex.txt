@@ -19,7 +19,7 @@
 --save_model=dads
 --save_freq=50
 --record_freq=100
---vid_name=skill
+--vid_name=latent
 
 # optimization hyperparmaters
 --replay_buffer_capacity=10000
@@ -30,10 +30,10 @@
 --collect_steps=500
 --num_epochs=4000
 
-# skill dynamics optimization hyperparameters
---skill_dyn_train_steps=8
---skill_dynamics_lr=3e-4
---skill_dyn_batch_size=256
+# latent dynamics optimization hyperparameters
+--latent_dyn_train_steps=8
+--latent_dynamics_lr=3e-4
+--latent_dyn_batch_size=256
 
 # agent hyperparameters
 --agent_gamma=0.99
@@ -43,35 +43,35 @@
 --agent_batch_size=256
 
 # (optional, do not change for on-policy) relabelling or off-policy corrections
---skill_dynamics_relabel_type=importance_sampling
+--latent_dynamics_relabel_type=importance_sampling
 --num_samples_for_relabelling=1
 --is_clip_eps=10.
 
-# (optional) skills can be resampled within the episodes, relative to max_env_steps
+# (optional) latents can be resampled within the episodes, relative to max_env_steps
 --min_steps_before_resample=2000
 --resample_prob=0.02
 
-# (optional) configure skill dynamics training samples to be only from the current policy
---train_skill_dynamics_on_policy=0
+# (optional) configure latent dynamics training samples to be only from the current policy
+--train_latent_dynamics_on_policy=0
 
 ### SHARED HYPERPARAMETERS ---------------------
 --environment=Ant-v1
 --max_env_steps=200
 --reduced_observation=2
 
-# define the type of skills being learnt
---num_skills=3
---skill_type=cont_uniform
---random_skills=100
+# define the type of latents being learnt
+--num_latents=3
+--latent_type=cont_uniform
+--random_latents=100
 --num_evals=10
-# this parameter only works when the skill_type is cont_uniform. it will make the evaluation evenly sample the uniform distribution 
+# this parameter only works when the latent_type is cont_uniform. it will make the evaluation evenly sample the uniform distribution 
 --cont_uniform_method=evenly  
 
 
-# (optional) policy, critic and skill dynamics
+# (optional) policy, critic and latent dynamics
 --hidden_layer_size=512
 
-# (optional) skill dynamics hyperparameters
+# (optional) latent dynamics hyperparameters
 --graph_type=default
 --num_components=4
 --fix_variance=1

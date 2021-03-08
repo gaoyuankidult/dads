@@ -52,7 +52,7 @@ from tf_agents.utils import nest_utils
 
 import dads_agent
 
-from envs import skill_wrapper
+from envs import latent_wrapper
 from envs import video_wrapper
 from envs.gym_mujoco import ant
 from envs.gym_mujoco import half_cheetah
@@ -80,9 +80,9 @@ flags.DEFINE_integer('reduced_observation', 0,
                      'Predict dynamics in a reduced observation space')
 flags.DEFINE_integer(
     'min_steps_before_resample', 50,
-    'Minimum number of steps to execute before resampling skill')
+    'Minimum number of steps to execute before resampling latent')
 flags.DEFINE_float('resample_prob', 0.,
-                   'Creates stochasticity timesteps before resampling skill')
+                   'Creates stochasticity timesteps before resampling latent')
 
 # need to set save_model and save_freq
 flags.DEFINE_string(
@@ -96,21 +96,24 @@ flags.DEFINE_integer('record_freq', 100,
                      'Video recording frequency within the training loop')
 
 # final evaluation after training is done
-flags.DEFINE_integer('run_eval', 0, 'Evaluate learnt skills')
+flags.DEFINE_integer('run_eval', 0, 'Evaluate learnt latents')
 
 # evaluation type
-flags.DEFINE_integer('num_evals', 0, 'Number of skills to evaluate')
+flags.DEFINE_integer('num_evals', 0, 'Number of latents to evaluate')
 flags.DEFINE_integer('deterministic_eval', 0,
-                  'Evaluate all skills, only works for discrete skills')
+                  'Evaluate all latents, only works for discrete latents')
 
 # training
 flags.DEFINE_integer('run_train', 0, 'Train the agent')
 flags.DEFINE_integer('num_epochs', 500, 'Number of training epochs')
 
-# skill latent space
-flags.DEFINE_integer('num_skills', 2, 'Number of skills to learn')
-flags.DEFINE_string('skill_type', 'cont_uniform',
-                    'Type of skill and the prior over it')
+# latent latent space
+flags.DEFINE_integer('num_latents', 2, 'Number of latents to learn')
+flags.DEFINE_string('latent_type', 'cont_uniform',
+                    'Type of latent and the prior over it')
+flags.DEFINE_string('cont_uniform_method', 'random',
+                    'Type of latent and the prior over it')
+                    
 # network size hyperparameter
 flags.DEFINE_integer(
     'hidden_layer_size', 512,
@@ -118,8 +121,8 @@ flags.DEFINE_integer(
 
 # reward structure
 flags.DEFINE_integer(
-    'random_skills', 0,
-    'Number of skills to sample randomly for approximating mutual information')
+    'random_latents', 0,
+    'Number of latents to sample randomly for approximating mutual information')
 
 # optimization hyperparameters
 flags.DEFINE_integer('replay_buffer_capacity', int(1e6),
@@ -135,15 +138,15 @@ flags.DEFINE_integer('collect_steps', 200, 'Steps collected per agent update')
 
 # relabelling
 flags.DEFINE_string('agent_relabel_type', None,
-                    'Type of skill relabelling used for agent')
+                    'Type of latent relabelling used for agent')
 flags.DEFINE_integer(
-    'train_skill_dynamics_on_policy', 0,
-    'Train skill-dynamics on policy data, while agent train off-policy')
-flags.DEFINE_string('skill_dynamics_relabel_type', None,
-                    'Type of skill relabelling used for skill-dynamics')
+    'train_latent_dynamics_on_policy', 0,
+    'Train latent-dynamics on policy data, while agent train off-policy')
+flags.DEFINE_string('latent_dynamics_relabel_type', None,
+                    'Type of latent relabelling used for latent-dynamics')
 flags.DEFINE_integer(
     'num_samples_for_relabelling', 100,
-    'Number of samples from prior for relabelling the current skill when using policy relabelling'
+    'Number of samples from prior for relabelling the current latent when using policy relabelling'
 )
 flags.DEFINE_float(
     'is_clip_eps', 0.,
@@ -152,15 +155,15 @@ flags.DEFINE_float(
 flags.DEFINE_float(
     'action_clipping', 1.,
     'Clip actions to (-eps, eps) per dimension to avoid difficulties with tanh')
-flags.DEFINE_integer('debug_skill_relabelling', 0,
-                     'analysis of skill relabelling')
+flags.DEFINE_integer('debug_latent_relabelling', 0,
+                     'analysis of latent relabelling')
 
-# skill dynamics optimization hyperparamaters
-flags.DEFINE_integer('skill_dyn_train_steps', 8,
+# latent dynamics optimization hyperparamaters
+flags.DEFINE_integer('latent_dyn_train_steps', 8,
                      'Number of discriminator train steps on a batch of data')
-flags.DEFINE_float('skill_dynamics_lr', 3e-4,
+flags.DEFINE_float('latent_dynamics_lr', 3e-4,
                    'Learning rate for increasing the log-likelihood')
-flags.DEFINE_integer('skill_dyn_batch_size', 256,
+flags.DEFINE_integer('latent_dyn_batch_size', 256,
                      'Batch size for discriminator updates')
 # agent optimization hyperparameters
 flags.DEFINE_integer('agent_batch_size', 256, 'Batch size for agent updates')
@@ -175,10 +178,10 @@ flags.DEFINE_string(
     'collect_policy', 'default',
     'Can use the OUNoisePolicy to collect experience for better exploration')
 
-# skill-dynamics hyperparameters
+# latent-dynamics hyperparameters
 flags.DEFINE_string(
     'graph_type', 'default',
-    'process skill input separately for more representational power')
+    'process latent input separately for more representational power')
 flags.DEFINE_integer('num_components', 4,
                      'Number of components for Mixture of Gaussians')
 flags.DEFINE_integer('fix_variance', 1,
@@ -210,8 +213,8 @@ flags.DEFINE_integer('primitive_horizon', 1, 'Horizon for every primitive')
 flags.DEFINE_integer('num_candidate_sequences', 50, 'Number of candidates sequence sampled from the proposal distribution')
 flags.DEFINE_integer('refine_steps', 10, 'Number of optimization steps')
 flags.DEFINE_float('mppi_gamma', 10.0, 'MPPI weighting hyperparameter')
-flags.DEFINE_string('prior_type', 'normal', 'Uniform or Gaussian prior for candidate skill(s)')
-flags.DEFINE_float('smoothing_beta', 0.9, 'Smooth candidate skill sequences used')
+flags.DEFINE_string('prior_type', 'normal', 'Uniform or Gaussian prior for candidate latent(s)')
+flags.DEFINE_float('smoothing_beta', 0.9, 'Smooth candidate latent sequences used')
 flags.DEFINE_integer('top_primitives', 5, 'Optimization parameter when using uniform prior (CEM style)')
 
 # global variables for this script
@@ -304,10 +307,10 @@ def hide_coords(time_step):
   return time_step
 
 
-def relabel_skill(trajectory_sample,
+def relabel_latent(trajectory_sample,
                   relabel_type=None,
                   cur_policy=None,
-                  cur_skill_dynamics=None):
+                  cur_latent_dynamics=None):
   global observation_omit_size
   if relabel_type is None or ('importance_sampling' in relabel_type and
                               FLAGS.is_clip_eps <= 1.0):
@@ -360,18 +363,18 @@ def relabel_skill(trajectory_sample,
         lambda t: np.stack([t[idx]] * FLAGS.num_samples_for_relabelling),
         time_steps)
 
-    # sample possible skills for relabelling from the prior
-    if FLAGS.skill_type == 'cont_uniform':
-      # always ensure that the original skill is one of the possible option for relabelling skills
-      alt_skills = np.concatenate([
+    # sample possible latents for relabelling from the prior
+    if FLAGS.latent_type == 'cont_uniform':
+      # always ensure that the original latent is one of the possible option for relabelling latents
+      alt_latents = np.concatenate([
           np.random.uniform(
               low=-1.0,
               high=1.0,
-              size=(FLAGS.num_samples_for_relabelling - 1, FLAGS.num_skills)),
-          alt_time_steps.observation[:1, -FLAGS.num_skills:]
+              size=(FLAGS.num_samples_for_relabelling - 1, FLAGS.num_latents)),
+          alt_time_steps.observation[:1, -FLAGS.num_latents:]
       ])
 
-    # choose the skill which gives the highest log-probability to the current action
+    # choose the latent which gives the highest log-probability to the current action
     if relabel_type == 'policy':
       cur_action = np.stack([action_steps.action[idx, :]] *
                             FLAGS.num_samples_for_relabelling)
@@ -379,58 +382,58 @@ def relabel_skill(trajectory_sample,
           observation=np.concatenate([
               alt_time_steps
               .observation[:,
-                           observation_omit_size:-FLAGS.num_skills], alt_skills
+                           observation_omit_size:-FLAGS.num_latents], alt_latents
           ],
                                      axis=1))
       action_log_probs = cur_policy.log_prob(alt_time_steps, cur_action)
-      if FLAGS.debug_skill_relabelling:
+      if FLAGS.debug_latent_relabelling:
         print('\n action_log_probs analysis----', idx,
-              time_steps.observation[idx, -FLAGS.num_skills:])
-        print('number of skills with higher log-probs:',
+              time_steps.observation[idx, -FLAGS.num_latents:])
+        print('number of latents with higher log-probs:',
               np.sum(action_log_probs >= action_log_probs[-1]))
-        print('Skills with log-probs higher than actual skill:')
-        skill_dist = []
-        for skill_idx in range(FLAGS.num_samples_for_relabelling):
-          if action_log_probs[skill_idx] >= action_log_probs[-1]:
-            print(alt_skills[skill_idx])
-            skill_dist.append(
-                np.linalg.norm(alt_skills[skill_idx] - alt_skills[-1]))
-        print('average distance of skills with higher-log-prob:',
-              np.mean(skill_dist))
-      max_skill_idx = np.argmax(action_log_probs)
+        print('Latents with log-probs higher than actual latent:')
+        latent_dist = []
+        for latent_idx in range(FLAGS.num_samples_for_relabelling):
+          if action_log_probs[latent_idx] >= action_log_probs[-1]:
+            print(alt_latents[latent_idx])
+            latent_dist.append(
+                np.linalg.norm(alt_latents[latent_idx] - alt_latents[-1]))
+        print('average distance of latents with higher-log-prob:',
+              np.mean(latent_dist))
+      max_latent_idx = np.argmax(action_log_probs)
 
-    # choose the skill which gets the highest log-probability under the dynamics posterior
+    # choose the latent which gets the highest log-probability under the dynamics posterior
     elif relabel_type == 'dynamics_posterior':
-      cur_observations = alt_time_steps.observation[:, :-FLAGS.num_skills]
+      cur_observations = alt_time_steps.observation[:, :-FLAGS.num_latents]
       next_observations = np.stack(
-          [next_time_steps.observation[idx, :-FLAGS.num_skills]] *
+          [next_time_steps.observation[idx, :-FLAGS.num_latents]] *
           FLAGS.num_samples_for_relabelling)
 
-      # max over posterior log probability is exactly the max over log-prob of transitin under skill-dynamics
-      posterior_log_probs = cur_skill_dynamics.get_log_prob(
-          process_observation(cur_observations), alt_skills,
+      # max over posterior log probability is exactly the max over log-prob of transitin under latent-dynamics
+      posterior_log_probs = cur_latent_dynamics.get_log_prob(
+          process_observation(cur_observations), alt_latents,
           process_observation(next_observations))
-      if FLAGS.debug_skill_relabelling:
+      if FLAGS.debug_latent_relabelling:
         print('\n dynamics_log_probs analysis----', idx,
-              time_steps.observation[idx, -FLAGS.num_skills:])
-        print('number of skills with higher log-probs:',
+              time_steps.observation[idx, -FLAGS.num_latents:])
+        print('number of latents with higher log-probs:',
               np.sum(posterior_log_probs >= posterior_log_probs[-1]))
-        print('Skills with log-probs higher than actual skill:')
-        skill_dist = []
-        for skill_idx in range(FLAGS.num_samples_for_relabelling):
-          if posterior_log_probs[skill_idx] >= posterior_log_probs[-1]:
-            print(alt_skills[skill_idx])
-            skill_dist.append(
-                np.linalg.norm(alt_skills[skill_idx] - alt_skills[-1]))
-        print('average distance of skills with higher-log-prob:',
-              np.mean(skill_dist))
+        print('Latents with log-probs higher than actual latent:')
+        latent_dist = []
+        for latent_idx in range(FLAGS.num_samples_for_relabelling):
+          if posterior_log_probs[latent_idx] >= posterior_log_probs[-1]:
+            print(alt_latents[latent_idx])
+            latent_dist.append(
+                np.linalg.norm(alt_latents[latent_idx] - alt_latents[-1]))
+        print('average distance of latents with higher-log-prob:',
+              np.mean(latent_dist))
 
-      max_skill_idx = np.argmax(posterior_log_probs)
+      max_latent_idx = np.argmax(posterior_log_probs)
 
-    # make the new observation with the relabelled skill
-    relabelled_skill = alt_skills[max_skill_idx]
+    # make the new observation with the relabelled latent
+    relabelled_latent = alt_latents[max_latent_idx]
     new_observation[idx] = np.concatenate(
-        [time_steps.observation[idx, :-FLAGS.num_skills], relabelled_skill])
+        [time_steps.observation[idx, :-FLAGS.num_latents], relabelled_latent])
 
   traj_observation = np.copy(trajectory_sample.observation)
   traj_observation[:, 0] = new_observation
@@ -575,7 +578,7 @@ def collect_experience(py_env,
           action=np.clip(action_step.action, -FLAGS.action_clipping,
                          FLAGS.action_clipping))
 
-    if FLAGS.skill_dynamics_relabel_type is not None and 'importance_sampling' in FLAGS.skill_dynamics_relabel_type and FLAGS.is_clip_eps > 1.0:
+    if FLAGS.latent_dynamics_relabel_type is not None and 'importance_sampling' in FLAGS.latent_dynamics_relabel_type and FLAGS.is_clip_eps > 1.0:
       cur_action_log_prob = collect_policy.log_prob(
           nest_utils.batch_nested_array(hide_coords(time_step)),
           np.expand_dims(action_step.action, 0))
@@ -629,11 +632,11 @@ def run_on_env(env,
     env_action = action_step.action
     next_time_step = env.step(env_action)
 
-    skill_size = FLAGS.num_skills
-    if skill_size > 0:
-      cur_observation = time_step.observation[:-skill_size]
-      cur_skill = time_step.observation[-skill_size:]
-      next_observation = next_time_step.observation[:-skill_size]
+    latent_size = FLAGS.num_latents
+    if latent_size > 0:
+      cur_observation = time_step.observation[:-latent_size]
+      cur_latent = time_step.observation[-latent_size:]
+      next_observation = next_time_step.observation[:-latent_size]
     else:
       cur_observation = time_step.observation
       next_observation = next_time_step.observation
@@ -643,15 +646,15 @@ def run_on_env(env,
         cur_observation, next_observation = process_observation(
             cur_observation), process_observation(next_observation)
       logp = dynamics.get_log_prob(
-          np.expand_dims(cur_observation, 0), np.expand_dims(cur_skill, 0),
+          np.expand_dims(cur_observation, 0), np.expand_dims(cur_latent, 0),
           np.expand_dims(next_observation, 0))
 
       cur_predicted_state = np.expand_dims(cur_observation, 0)
-      skill_expanded = np.expand_dims(cur_skill, 0)
+      latent_expanded = np.expand_dims(cur_latent, 0)
       cur_predicted_trajectory = [cur_predicted_state[0]]
       for _ in range(predict_trajectory_steps):
         next_predicted_state = dynamics.predict_state(cur_predicted_state,
-                                                      skill_expanded)
+                                                      latent_expanded)
         cur_predicted_trajectory.append(next_predicted_state[0])
         cur_predicted_state = next_predicted_state
     else:
@@ -684,10 +687,10 @@ def eval_loop(eval_dir,
               plot_name=None):
   metadata = tf.io.gfile.GFile(
       os.path.join(eval_dir, 'metadata.txt'), 'a')
-  if FLAGS.num_skills == 0:
+  if FLAGS.num_latents == 0:
     num_evals = FLAGS.num_evals
   elif FLAGS.deterministic_eval:
-    num_evals = FLAGS.num_skills
+    num_evals = FLAGS.num_latents
   else:
     num_evals = FLAGS.num_evals
 
@@ -704,35 +707,34 @@ def eval_loop(eval_dir,
     # all_predicted_trajectories = []
 
   for idx in range(num_evals):
-    if FLAGS.num_skills > 0:
+    if FLAGS.num_latents > 0:
       if FLAGS.deterministic_eval:
-        preset_skill = np.zeros(FLAGS.num_skills, dtype=np.int64)
-        preset_skill[idx] = 1
-      elif FLAGS.skill_type == 'discrete_uniform':
-        preset_skill = np.random.multinomial(1, [1. / FLAGS.num_skills] *
-                                             FLAGS.num_skills)
-      elif FLAGS.skill_type == 'gaussian':
-        preset_skill = np.random.multivariate_normal(
-            np.zeros(FLAGS.num_skills), np.eye(FLAGS.num_skills))
-      elif FLAGS.skill_type == 'cont_uniform':
-        if FLAGS.cont_uniform_method == 'evenly':
-          print("Evaluation method is selected to be 'evenly'.")
-          preset_skill = np.linspace(-1.0, 1.0, FLAGS.num_skills)
+        preset_latent = np.zeros(FLAGS.num_latents, dtype=np.int64)
+        preset_latent[idx] = 1
+      elif FLAGS.latent_type == 'discrete_uniform':
+        preset_latent = np.random.multinomial(1, [1. / FLAGS.num_latents] *
+                                             FLAGS.num_latents)
+      elif FLAGS.latent_type == 'gaussian':
+        preset_latent = np.random.multivariate_normal(
+            np.zeros(FLAGS.num_latents), np.eye(FLAGS.num_latents))
+      elif FLAGS.latent_type == 'cont_uniform':
+        if FLAGS.cont_uniform_method == 'evenly' and FLAGS.num_latents == 1:
+          preset_latent = np.linspace(-1.0, 1.0, num_evals)[[idx]]
         else:
-          preset_skill = np.random.uniform(
-            low=-1.0, high=1.0, size=FLAGS.num_skills)
-      elif FLAGS.skill_type == 'multivariate_bernoulli':
-        preset_skill = np.random.binomial(1, 0.5, size=FLAGS.num_skills)
+          preset_latent = np.random.uniform(
+            low=-1.0, high=1.0, size=FLAGS.num_latents)
+      elif FLAGS.latent_type == 'multivariate_bernoulli':
+        preset_latent = np.random.binomial(1, 0.5, size=FLAGS.num_latents)
     else:
-      preset_skill = None
+      preset_latent = None
 
     eval_env = get_environment(env_name=FLAGS.environment)
     eval_env = wrap_env(
-        skill_wrapper.SkillWrapper(
+        latent_wrapper.LatentWrapper(
             eval_env,
-            num_latent_skills=FLAGS.num_skills,
-            skill_type=FLAGS.skill_type,
-            preset_skill=preset_skill,
+            num_latents=FLAGS.num_latents,
+            latent_type=FLAGS.latent_type,
+            preset_latent=preset_latent,
             min_steps_before_resample=FLAGS.min_steps_before_resample,
             resample_prob=FLAGS.resample_prob),
         max_episode_steps=FLAGS.max_env_steps)
@@ -743,18 +745,18 @@ def eval_loop(eval_dir,
       eval_env = video_wrapper.VideoWrapper(eval_env, base_path=eval_dir, base_name=full_vid_name)
 
     mean_reward = 0.
-    per_skill_evaluations = 1
+    per_latent_evaluations = 1
     predict_trajectory_steps = 0
-    # trajectories_per_skill = []
-    # predicted_trajectories_per_skill = []
-    for eval_idx in range(per_skill_evaluations):
+    # trajectories_per_latent = []
+    # predicted_trajectories_per_latent = []
+    for eval_idx in range(per_latent_evaluations):
       eval_trajectory = run_on_env(
           eval_env,
           eval_policy,
           dynamics=dynamics,
           predict_trajectory_steps=predict_trajectory_steps,
           return_data=True,
-          close_environment=True if eval_idx == per_skill_evaluations -
+          close_environment=True if eval_idx == per_latent_evaluations -
           1 else False)
 
       trajectory_coordinates = np.array([
@@ -766,7 +768,7 @@ def eval_loop(eval_dir,
       #     eval_trajectory[step_idx][0]
       #     for step_idx in range(len(eval_trajectory))
       # ])
-      # trajectories_per_skill.append(trajectory_states)
+      # trajectories_per_latent.append(trajectory_states)
       if plot_name is not None:
         plt.plot(
             trajectory_coordinates[:, 0],
@@ -783,7 +785,7 @@ def eval_loop(eval_dir,
           #     eval_trajectory[step_idx][-1]
           #     for step_idx in range(len(eval_trajectory))
           # ])
-          # predicted_trajectories_per_skill.append(predicted_states)
+          # predicted_trajectories_per_latent.append(predicted_states)
           for step_idx in range(len(eval_trajectory)):
             if step_idx % 20 == 0:
               plt.plot(eval_trajectory[step_idx][-1][:, 0],
@@ -794,12 +796,12 @@ def eval_loop(eval_dir,
           for step_idx in range(len(eval_trajectory))
       ])
       metadata.write(
-          str(idx) + ' ' + str(preset_skill) + ' ' +
+          str(idx) + ' ' + str(preset_latent) + ' ' +
           str(trajectory_coordinates[-1, :]) + '\n')
 
     # all_predicted_trajectories.append(
-    #     np.stack(predicted_trajectories_per_skill))
-    # all_trajectories.append(np.stack(trajectories_per_skill))
+    #     np.stack(predicted_trajectories_per_latent))
+    # all_trajectories.append(np.stack(trajectories_per_latent))
 
   # all_predicted_trajectories = np.stack(all_predicted_trajectories)
   # all_trajectories = np.stack(all_trajectories)
@@ -807,19 +809,19 @@ def eval_loop(eval_dir,
   # pkl.dump(
   #     all_trajectories,
   #     tf.io.gfile.GFile(
-  #         os.path.join(vid_dir, 'skill_dynamics_full_obs_r100_actual_trajectories.pkl'),
+  #         os.path.join(vid_dir, 'latent_dynamics_full_obs_r100_actual_trajectories.pkl'),
   #         'wb'))
   # pkl.dump(
   #     all_predicted_trajectories,
   #     tf.io.gfile.GFile(
-  #         os.path.join(vid_dir, 'skill_dynamics_full_obs_r100_predicted_trajectories.pkl'),
+  #         os.path.join(vid_dir, 'latent_dynamics_full_obs_r100_predicted_trajectories.pkl'),
   #         'wb'))
   if plot_name is not None:
     full_image_name = plot_name + '.png'
 
     # to save images while writing to CNS
     buf = io.BytesIO()
-    # plt.title('Trajectories in Continuous Skill Space')
+    # plt.title('Trajectories in Continuous Latent Space')
     plt.savefig(buf, dpi=600, bbox_inches='tight')
     buf.seek(0)
     image = tf.io.gfile.GFile(os.path.join(eval_dir, full_image_name), 'w')
@@ -829,7 +831,7 @@ def eval_loop(eval_dir,
     plt.clf()
 
 
-# discrete primitives only, useful with skill-dynamics
+# discrete primitives only, useful with latent-dynamics
 def eval_planning(env,
                   dynamics,
                   policy,
@@ -838,7 +840,7 @@ def eval_planning(env,
                   planning_horizon=1,
                   primitive_horizon=10,
                   **kwargs):
-  """env: tf-agents environment without the skill wrapper."""
+  """env: tf-agents environment without the latent wrapper."""
   global goal_coord
 
   # assuming only discrete action spaces
@@ -872,7 +874,7 @@ def eval_planning(env,
     selected_high_level_action = np.argmax(running_reward)
     for _ in range(primitive_horizon):
       # concatenated observation
-      skill_concat_observation = np.concatenate([
+      latent_concat_observation = np.concatenate([
           time_step.observation,
           high_level_action_space[selected_high_level_action]
       ],
@@ -882,7 +884,7 @@ def eval_planning(env,
               policy.action(
                   hide_coords(
                       time_step._replace(
-                          observation=skill_concat_observation))).action,
+                          observation=latent_concat_observation))).action,
               -FLAGS.action_clipping, FLAGS.action_clipping))
       actual_reward += next_time_step.reward
 
@@ -911,12 +913,12 @@ def eval_mppi(
     sparsify_rewards=False,
     # only for uniform prior mode
     top_primitives=5):
-  """env: tf-agents environment without the skill wrapper.
+  """env: tf-agents environment without the latent wrapper.
 
-     dynamics: skill-dynamics model learnt by DADS.
-     policy: skill-conditioned policy learnt by DADS.
-     planning_horizon: number of latent skills to plan in the future.
-     primitive_horizon: number of steps each skill is executed for.
+     dynamics: latent-dynamics model learnt by DADS.
+     policy: latent-conditioned policy learnt by DADS.
+     planning_horizon: number of latent latents to plan in the future.
+     primitive_horizon: number of steps each latent is executed for.
      num_candidate_sequences: number of samples executed from the prior per
      refining step of planning.
      refine_steps: number of steps for which the plan is iterated upon before
@@ -1053,14 +1055,14 @@ def eval_mppi(
 
     for _ in range(primitive_horizon):
       # concatenated observation
-      skill_concat_observation = np.concatenate(
+      latent_concat_observation = np.concatenate(
           [time_step.observation, chosen_primitive], axis=0)
       next_time_step = env.step(
           np.clip(
               policy.action(
                   hide_coords(
                       time_step._replace(
-                          observation=skill_concat_observation))).action,
+                          observation=latent_concat_observation))).action,
               -FLAGS.action_clipping, FLAGS.action_clipping))
       actual_reward += next_time_step.reward
       distance_to_goal_array.append(next_time_step.reward)
@@ -1121,11 +1123,11 @@ def main(_):
     # environment related stuff
     py_env = get_environment(env_name=FLAGS.environment)
     py_env = wrap_env(
-        skill_wrapper.SkillWrapper(
+        latent_wrapper.LatentWrapper(
             py_env,
-            num_latent_skills=FLAGS.num_skills,
-            skill_type=FLAGS.skill_type,
-            preset_skill=None,
+            num_latents=FLAGS.num_latents,
+            latent_type=FLAGS.latent_type,
+            preset_latent=None,
             min_steps_before_resample=FLAGS.min_steps_before_resample,
             resample_prob=FLAGS.resample_prob),
         max_episode_steps=FLAGS.max_env_steps)
@@ -1151,10 +1153,10 @@ def main(_):
     tf_agent_time_step_spec = tensor_spec.from_spec(py_agent_time_step_spec)
 
     if not FLAGS.reduced_observation:
-      skill_dynamics_observation_size = (
-          py_env_time_step_spec.observation.shape[0] - FLAGS.num_skills)
+      latent_dynamics_observation_size = (
+          py_env_time_step_spec.observation.shape[0] - FLAGS.num_latents)
     else:
-      skill_dynamics_observation_size = FLAGS.reduced_observation
+      latent_dynamics_observation_size = FLAGS.reduced_observation
 
     # TODO(architsh): Shift co-ordinate hiding to actor_net and critic_net (good for futher image based processing as well)
     actor_net = actor_distribution_network.ActorDistributionNetwork(
@@ -1169,7 +1171,7 @@ def main(_):
         action_fc_layer_params=None,
         joint_fc_layer_params=(FLAGS.hidden_layer_size,) * 2)
 
-    if FLAGS.skill_dynamics_relabel_type is not None and 'importance_sampling' in FLAGS.skill_dynamics_relabel_type and FLAGS.is_clip_eps > 1.0:
+    if FLAGS.latent_dynamics_relabel_type is not None and 'importance_sampling' in FLAGS.latent_dynamics_relabel_type and FLAGS.is_clip_eps > 1.0:
       reweigh_batches_flag = True
     else:
       reweigh_batches_flag = False
@@ -1177,19 +1179,19 @@ def main(_):
     agent = dads_agent.DADSAgent(
         # DADS parameters
         save_dir,
-        skill_dynamics_observation_size,
+        latent_dynamics_observation_size,
         observation_modify_fn=process_observation,
         restrict_input_size=observation_omit_size,
-        latent_size=FLAGS.num_skills,
-        latent_prior=FLAGS.skill_type,
-        prior_samples=FLAGS.random_skills,
+        latent_size=FLAGS.num_latents,
+        latent_prior=FLAGS.latent_type,
+        prior_samples=FLAGS.random_latents,
         fc_layer_params=(FLAGS.hidden_layer_size,) * 2,
         normalize_observations=FLAGS.normalize_data,
         network_type=FLAGS.graph_type,
         num_mixture_components=FLAGS.num_components,
         fix_variance=FLAGS.fix_variance,
         reweigh_batches=reweigh_batches_flag,
-        skill_dynamics_learning_rate=FLAGS.skill_dynamics_lr,
+        latent_dynamics_learning_rate=FLAGS.latent_dynamics_lr,
         # SAC parameters
         time_step_spec=tf_agent_time_step_spec,
         action_spec=tf_action_spec,
@@ -1229,7 +1231,7 @@ def main(_):
     policy_step_spec = policy_step.PolicyStep(
         action=py_action_spec, state=(), info=())
 
-    if FLAGS.skill_dynamics_relabel_type is not None and 'importance_sampling' in FLAGS.skill_dynamics_relabel_type and FLAGS.is_clip_eps > 1.0:
+    if FLAGS.latent_dynamics_relabel_type is not None and 'importance_sampling' in FLAGS.latent_dynamics_relabel_type and FLAGS.is_clip_eps > 1.0:
       policy_step_spec = policy_step_spec._replace(
           info=policy_step.set_log_probability(
               policy_step_spec.info,
@@ -1243,15 +1245,15 @@ def main(_):
     rbuffer = py_uniform_replay_buffer.PyUniformReplayBuffer(
         capacity=capacity, data_spec=trajectory_spec)
 
-    if FLAGS.train_skill_dynamics_on_policy:
+    if FLAGS.train_latent_dynamics_on_policy:
       # for on-policy data (if something special is required)
       on_buffer = py_uniform_replay_buffer.PyUniformReplayBuffer(
           capacity=FLAGS.initial_collect_steps + FLAGS.collect_steps + 10,
           data_spec=trajectory_spec)
 
-    # insert experience manually with relabelled rewards and skills
+    # insert experience manually with relabelled rewards and latents
     agent.build_agent_graph()
-    agent.build_skill_dynamics_graph()
+    agent.build_latent_dynamics_graph()
     agent.create_savers()
 
     # saving this way requires the saver to be out the object
@@ -1275,7 +1277,7 @@ def main(_):
       train_checkpointer.initialize_or_restore(sess)
       rb_checkpointer.initialize_or_restore(sess)
       agent.set_sessions(
-          initialize_or_restore_skill_dynamics=True, session=sess)
+          initialize_or_restore_latent_dynamics=True, session=sess)
 
       meta_start_time = time.time()
       if FLAGS.run_train:
@@ -1311,7 +1313,7 @@ def main(_):
               py_env,
               time_step,
               collect_policy,
-              buffer_list=[rbuffer] if not FLAGS.train_skill_dynamics_on_policy
+              buffer_list=[rbuffer] if not FLAGS.train_latent_dynamics_on_policy
               else [rbuffer, on_buffer],
               num_steps=FLAGS.initial_collect_steps)
           _process_episodic_data(episode_size_buffer,
@@ -1345,7 +1347,7 @@ def main(_):
               py_env,
               time_step,
               collect_policy,
-              buffer_list=[rbuffer] if not FLAGS.train_skill_dynamics_on_policy
+              buffer_list=[rbuffer] if not FLAGS.train_latent_dynamics_on_policy
               else [rbuffer, on_buffer],
               num_steps=FLAGS.collect_steps)
           sample_count += FLAGS.collect_steps
@@ -1356,71 +1358,71 @@ def main(_):
           collect_end_time = time.time()
           print('Iter collection time:', collect_end_time - collect_start_time)
 
-          # only for debugging skill relabelling
-          if iter_count >= 1 and FLAGS.debug_skill_relabelling:
+          # only for debugging latent relabelling
+          if iter_count >= 1 and FLAGS.debug_latent_relabelling:
             trajectory_sample = rbuffer.get_next(
                 sample_batch_size=5, num_steps=2)
             trajectory_sample = _filter_trajectories(trajectory_sample)
-            # trajectory_sample, _ = relabel_skill(
+            # trajectory_sample, _ = relabel_latent(
             #     trajectory_sample,
             #     relabel_type='policy',
             #     cur_policy=relabel_policy,
-            #     cur_skill_dynamics=agent.skill_dynamics)
-            trajectory_sample, is_weights = relabel_skill(
+            #     cur_latent_dynamics=agent.latent_dynamics)
+            trajectory_sample, is_weights = relabel_latent(
                 trajectory_sample,
                 relabel_type='importance_sampling',
                 cur_policy=relabel_policy,
-                cur_skill_dynamics=agent.skill_dynamics)
+                cur_latent_dynamics=agent.latent_dynamics)
             print(is_weights)
 
-          skill_dynamics_buffer = rbuffer
-          if FLAGS.train_skill_dynamics_on_policy:
-            skill_dynamics_buffer = on_buffer
+          latent_dynamics_buffer = rbuffer
+          if FLAGS.train_latent_dynamics_on_policy:
+            latent_dynamics_buffer = on_buffer
 
           # TODO(architsh): clear_buffer_every_iter needs to fix these as well
           for _ in range(1 if FLAGS.clear_buffer_every_iter else FLAGS
-                         .skill_dyn_train_steps):
+                         .latent_dyn_train_steps):
             if FLAGS.clear_buffer_every_iter:
               trajectory_sample = rbuffer.gather_all_transitions()
             else:
-              trajectory_sample = skill_dynamics_buffer.get_next(
-                  sample_batch_size=FLAGS.skill_dyn_batch_size, num_steps=2)
+              trajectory_sample = latent_dynamics_buffer.get_next(
+                  sample_batch_size=FLAGS.latent_dyn_batch_size, num_steps=2)
             trajectory_sample = _filter_trajectories(trajectory_sample)
 
             # is_weights is None usually, unless relabelling involves importance_sampling
-            trajectory_sample, is_weights = relabel_skill(
+            trajectory_sample, is_weights = relabel_latent(
                 trajectory_sample,
-                relabel_type=FLAGS.skill_dynamics_relabel_type,
+                relabel_type=FLAGS.latent_dynamics_relabel_type,
                 cur_policy=relabel_policy,
-                cur_skill_dynamics=agent.skill_dynamics)
+                cur_latent_dynamics=agent.latent_dynamics)
             input_obs = process_observation(
-                trajectory_sample.observation[:, 0, :-FLAGS.num_skills])
-            cur_skill = trajectory_sample.observation[:, 0, -FLAGS.num_skills:]
+                trajectory_sample.observation[:, 0, :-FLAGS.num_latents])
+            cur_latent = trajectory_sample.observation[:, 0, -FLAGS.num_latents:]
             target_obs = process_observation(
-                trajectory_sample.observation[:, 1, :-FLAGS.num_skills])
+                trajectory_sample.observation[:, 1, :-FLAGS.num_latents])
             if FLAGS.clear_buffer_every_iter:
-              agent.skill_dynamics.train(
+              agent.latent_dynamics.train(
                   input_obs,
-                  cur_skill,
+                  cur_latent,
                   target_obs,
-                  batch_size=FLAGS.skill_dyn_batch_size,
+                  batch_size=FLAGS.latent_dyn_batch_size,
                   batch_weights=is_weights,
-                  num_steps=FLAGS.skill_dyn_train_steps)
+                  num_steps=FLAGS.latent_dyn_train_steps)
             else:
-              agent.skill_dynamics.train(
+              agent.latent_dynamics.train(
                   input_obs,
-                  cur_skill,
+                  cur_latent,
                   target_obs,
                   batch_size=-1,
                   batch_weights=is_weights,
                   num_steps=1)
 
-          if FLAGS.train_skill_dynamics_on_policy:
+          if FLAGS.train_latent_dynamics_on_policy:
             on_buffer.clear()
 
-          skill_dynamics_end_train_time = time.time()
-          print('skill_dynamics train time:',
-                skill_dynamics_end_train_time - collect_end_time)
+          latent_dynamics_end_train_time = time.time()
+          print('latent_dynamics train time:',
+                latent_dynamics_end_train_time - collect_end_time)
 
           running_dads_reward, running_logp, running_logp_altz = [], [], []
 
@@ -1442,16 +1444,16 @@ def main(_):
 
             filtering_time = time.time()
             filtering_time_arr.append(filtering_time - buffer_sampling_time)
-            trajectory_sample, _ = relabel_skill(
+            trajectory_sample, _ = relabel_latent(
                 trajectory_sample,
                 relabel_type=FLAGS.agent_relabel_type,
                 cur_policy=relabel_policy,
-                cur_skill_dynamics=agent.skill_dynamics)
+                cur_latent_dynamics=agent.latent_dynamics)
             relabelling_time = time.time()
             relabelling_time_arr.append(relabelling_time - filtering_time)
 
             # need to match the assert structure
-            if FLAGS.skill_dynamics_relabel_type is not None and 'importance_sampling' in FLAGS.skill_dynamics_relabel_type:
+            if FLAGS.latent_dynamics_relabel_type is not None and 'importance_sampling' in FLAGS.latent_dynamics_relabel_type:
               trajectory_sample = trajectory_sample._replace(policy_info=())
 
             if not FLAGS.clear_buffer_every_iter:
@@ -1476,7 +1478,7 @@ def main(_):
 
           agent_end_train_time = time.time()
           print('agent train time:',
-                agent_end_train_time - skill_dynamics_end_train_time)
+                agent_end_train_time - latent_dynamics_end_train_time)
           print('\t sampling time:', np.sum(sampling_time_arr))
           print('\t filtering_time:', np.sum(filtering_time_arr))
           print('\t relabelling time:', np.sum(relabelling_time_arr))
@@ -1530,7 +1532,7 @@ def main(_):
             eval_loop(
                 cur_vid_dir,
                 eval_policy,
-                dynamics=agent.skill_dynamics,
+                dynamics=agent.latent_dynamics,
                 vid_name=FLAGS.vid_name,
                 plot_name='traj_plot')
 
@@ -1549,12 +1551,12 @@ def main(_):
           tf.io.gfile.makedirs(vid_dir)
         vid_name = FLAGS.vid_name
 
-        # generic skill evaluation
+        # generic latent evaluation
         if FLAGS.deterministic_eval or FLAGS.num_evals > 0:
           eval_loop(
               vid_dir,
               eval_policy,
-              dynamics=agent.skill_dynamics,
+              dynamics=agent.latent_dynamics,
               vid_name=vid_name,
               plot_name='traj_plot')
 
@@ -1573,7 +1575,7 @@ def main(_):
         if not tf.io.gfile.exists(eval_dir):
           tf.io.gfile.makedirs(eval_dir)
         save_label = 'goal_'
-        if 'discrete' in FLAGS.skill_type:
+        if 'discrete' in FLAGS.latent_type:
           planning_fn = eval_planning
           
         else:
@@ -1629,8 +1631,8 @@ def main(_):
 
           for _ in range(1):
             reward, actual_coords, primitives, distance_to_goal_array = planning_fn(
-                eval_plan_env, agent.skill_dynamics, eval_policy,
-                latent_action_space_size=FLAGS.num_skills,
+                eval_plan_env, agent.latent_dynamics, eval_policy,
+                latent_action_space_size=FLAGS.num_latents,
                 episode_horizon=FLAGS.max_env_steps,
                 planning_horizon=FLAGS.planning_horizon,
                 primitive_horizon=FLAGS.primitive_horizon,

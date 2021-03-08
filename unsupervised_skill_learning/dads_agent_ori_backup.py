@@ -28,7 +28,7 @@ import tensorflow as tf
 
 from tf_agents.agents.sac import sac_agent
 
-import skill_dynamics
+import latent_dynamics
 
 nest = tf.nest
 
@@ -37,7 +37,7 @@ class DADSAgent(sac_agent.SacAgent):
 
   def __init__(self,
                save_directory,
-               skill_dynamics_observation_size,
+               latent_dynamics_observation_size,
                observation_modify_fn=None,
                restrict_input_size=0,
                latent_size=2,
@@ -48,13 +48,13 @@ class DADSAgent(sac_agent.SacAgent):
                network_type='default',
                num_mixture_components=4,
                fix_variance=True,
-               skill_dynamics_learning_rate=3e-4,
+               latent_dynamics_learning_rate=3e-4,
                reweigh_batches=False,
                agent_graph=None,
-               skill_dynamics_graph=None,
+               latent_dynamics_graph=None,
                *sac_args,
                **sac_kwargs):
-    self._skill_dynamics_learning_rate = skill_dynamics_learning_rate
+    self._latent_dynamics_learning_rate = latent_dynamics_learning_rate
     self._latent_size = latent_size
     self._latent_prior = latent_prior
     self._prior_samples = prior_samples
@@ -67,12 +67,12 @@ class DADSAgent(sac_agent.SacAgent):
     else:
       self._graph = agent_graph
 
-    if skill_dynamics_graph is None:
-      skill_dynamics_graph = self._graph
+    if latent_dynamics_graph is None:
+      latent_dynamics_graph = self._graph
 
-    # instantiate the skill dynamics
-    self._skill_dynamics = skill_dynamics.SkillDynamics(
-        observation_size=skill_dynamics_observation_size,
+    # instantiate the latent dynamics
+    self._latent_dynamics = latent_dynamics.LatentDynamics(
+        observation_size=latent_dynamics_observation_size,
         action_size=self._latent_size,
         restrict_observation=self._restrict_input_size,
         normalize_observations=normalize_observations,
@@ -81,12 +81,12 @@ class DADSAgent(sac_agent.SacAgent):
         num_components=num_mixture_components,
         fix_variance=fix_variance,
         reweigh_batches=reweigh_batches,
-        graph=skill_dynamics_graph)
+        graph=latent_dynamics_graph)
 
     super(DADSAgent, self).__init__(*sac_args, **sac_kwargs)
     self._placeholders_in_place = False
 
-  def compute_dads_reward(self, input_obs, cur_skill, target_obs):
+  def compute_dads_reward(self, input_obs, cur_latent, target_obs):
     if self._process_observation is not None:
       input_obs, target_obs = self._process_observation(
           input_obs), self._process_observation(target_obs)
@@ -97,28 +97,28 @@ class DADSAgent(sac_agent.SacAgent):
 
     # for marginalization of the denominator
     if self._latent_prior == 'discrete_uniform' and not self._prior_samples:
-      alt_skill = np.concatenate(
-          [np.roll(cur_skill, i, axis=1) for i in range(1, num_reps + 1)],
+      alt_latent = np.concatenate(
+          [np.roll(cur_latent, i, axis=1) for i in range(1, num_reps + 1)],
           axis=0)
     elif self._latent_prior == 'discrete_uniform':
-      alt_skill = np.random.multinomial(
+      alt_latent = np.random.multinomial(
           1, [1. / self._latent_size] * self._latent_size,
           size=input_obs_altz.shape[0])
     elif self._latent_prior == 'gaussian':
-      alt_skill = np.random.multivariate_normal(
+      alt_latent = np.random.multivariate_normal(
           np.zeros(self._latent_size),
           np.eye(self._latent_size),
           size=input_obs_altz.shape[0])
     elif self._latent_prior == 'cont_uniform':
-      alt_skill = np.random.uniform(
+      alt_latent = np.random.uniform(
           low=-1.0, high=1.0, size=(input_obs_altz.shape[0], self._latent_size))
 
-    logp = self._skill_dynamics.get_log_prob(input_obs, cur_skill, target_obs)
+    logp = self._latent_dynamics.get_log_prob(input_obs, cur_latent, target_obs)
 
     # denominator may require more memory than that of a GPU, break computation
     split_group = 20 * 4000
     if input_obs_altz.shape[0] <= split_group:
-      logp_altz = self._skill_dynamics.get_log_prob(input_obs_altz, alt_skill,
+      logp_altz = self._latent_dynamics.get_log_prob(input_obs_altz, alt_latent,
                                                     target_obs_altz)
     else:
       logp_altz = []
@@ -126,15 +126,15 @@ class DADSAgent(sac_agent.SacAgent):
         start_split = split_idx * split_group
         end_split = (split_idx + 1) * split_group
         logp_altz.append(
-            self._skill_dynamics.get_log_prob(
+            self._latent_dynamics.get_log_prob(
                 input_obs_altz[start_split:end_split],
-                alt_skill[start_split:end_split],
+                alt_latent[start_split:end_split],
                 target_obs_altz[start_split:end_split]))
       if input_obs_altz.shape[0] % split_group:
         start_split = input_obs_altz.shape[0] % split_group
         logp_altz.append(
-            self._skill_dynamics.get_log_prob(input_obs_altz[-start_split:],
-                                              alt_skill[-start_split:],
+            self._latent_dynamics.get_log_prob(input_obs_altz[-start_split:],
+                                              alt_latent[-start_split:],
                                               target_obs_altz[-start_split:]))
       logp_altz = np.concatenate(logp_altz)
     logp_altz = np.array(np.array_split(logp_altz, num_reps))
@@ -167,27 +167,27 @@ class DADSAgent(sac_agent.SacAgent):
       self.summary_ops = tf.compat.v1.summary.all_v2_summary_ops()
       return self.agent_train_op
 
-  def build_skill_dynamics_graph(self):
-    self._skill_dynamics.make_placeholders()
-    self._skill_dynamics.build_graph()
-    self._skill_dynamics.increase_prob_op(
-        learning_rate=self._skill_dynamics_learning_rate)
+  def build_latent_dynamics_graph(self):
+    self._latent_dynamics.make_placeholders()
+    self._latent_dynamics.build_graph()
+    self._latent_dynamics.increase_prob_op(
+        learning_rate=self._latent_dynamics_learning_rate)
 
   def create_savers(self):
-    self._skill_dynamics.create_saver(
+    self._latent_dynamics.create_saver(
         save_prefix=os.path.join(self._save_directory, 'dynamics'))
 
-  def set_sessions(self, initialize_or_restore_skill_dynamics, session=None):
+  def set_sessions(self, initialize_or_restore_latent_dynamics, session=None):
     if session is not None:
       self._session = session
     else:
       self._session = tf.compat.v1.Session(graph=self._graph)
-    self._skill_dynamics.set_session(
-        initialize_or_restore_variables=initialize_or_restore_skill_dynamics,
+    self._latent_dynamics.set_session(
+        initialize_or_restore_variables=initialize_or_restore_latent_dynamics,
         session=session)
 
   def save_variables(self, global_step):
-    self._skill_dynamics.save_variables(global_step=global_step)
+    self._latent_dynamics.save_variables(global_step=global_step)
 
   def _get_dict(self, trajectories, batch_size=-1):
     tf.nest.assert_same_structure(self.collect_data_spec, trajectories)
@@ -214,9 +214,9 @@ class DADSAgent(sac_agent.SacAgent):
 
     if recompute_reward:
       input_obs = trajectories.observation[:, 0, :-self._latent_size]
-      cur_skill = trajectories.observation[:, 0, -self._latent_size:]
+      cur_latent = trajectories.observation[:, 0, -self._latent_size:]
       target_obs = trajectories.observation[:, 1, :-self._latent_size]
-      new_reward, info = self.compute_dads_reward(input_obs, cur_skill,
+      new_reward, info = self.compute_dads_reward(input_obs, cur_latent,
                                                   target_obs)
       trajectories = trajectories._replace(
           reward=np.concatenate(
@@ -240,5 +240,5 @@ class DADSAgent(sac_agent.SacAgent):
       return None, None
 
   @property
-  def skill_dynamics(self):
-    return self._skill_dynamics
+  def latent_dynamics(self):
+    return self._latent_dynamics

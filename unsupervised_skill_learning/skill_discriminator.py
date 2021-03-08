@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Skill Discriminator Prediction and Training."""
+"""Latent Discriminator Prediction and Training."""
 
 from __future__ import absolute_import
 from __future__ import division
@@ -25,13 +25,13 @@ import tensorflow_probability as tfp
 
 from tf_agents.distributions import tanh_bijector_stable
 
-class SkillDiscriminator:
+class LatentDiscriminator:
 
   def __init__(
       self,
       observation_size,
-      skill_size,
-      skill_type,
+      latent_size,
+      latent_type,
       normalize_observations=False,
       # network properties
       fc_layer_params=(256, 256),
@@ -39,11 +39,11 @@ class SkillDiscriminator:
       input_type='diayn',
       # probably do not need to change these
       graph=None,
-      scope_name='skill_discriminator'):
+      scope_name='latent_discriminator'):
 
     self._observation_size = observation_size
-    self._skill_size = skill_size
-    self._skill_type = skill_type
+    self._latent_size = latent_size
+    self._latent_type = latent_type
     self._normalize_observations = normalize_observations
 
     # tensorflow requirements
@@ -71,31 +71,31 @@ class SkillDiscriminator:
     self._saver = None
 
   def _get_distributions(self, out):
-    if self._skill_type in ['gaussian', 'cont_uniform']:
+    if self._latent_type in ['gaussian', 'cont_uniform']:
       mean = tf.layers.dense(
-          out, self._skill_size, name='mean', reuse=tf.AUTO_REUSE)
+          out, self._latent_size, name='mean', reuse=tf.AUTO_REUSE)
       if not self._fix_variance:
         stddev = tf.clip_by_value(
             tf.layers.dense(
                 out,
-                self._skill_size,
+                self._latent_size,
                 activation=tf.nn.softplus,
                 name='stddev',
                 reuse=tf.AUTO_REUSE), self._std_lower_clip,
             self._std_upper_clip)
       else:
-        stddev = tf.fill([tf.shape(out)[0], self._skill_size], 1.0)
+        stddev = tf.fill([tf.shape(out)[0], self._latent_size], 1.0)
 
       inference_distribution = tfp.distributions.MultivariateNormalDiag(
           loc=mean, scale_diag=stddev)
 
-      if self._skill_type == 'gaussian':
+      if self._latent_type == 'gaussian':
         prior_distribution = tfp.distributions.MultivariateNormalDiag(
-            loc=[0.] * self._skill_size, scale_diag=[1.] * self._skill_size)
-      elif self._skill_type == 'cont_uniform':
+            loc=[0.] * self._latent_size, scale_diag=[1.] * self._latent_size)
+      elif self._latent_type == 'cont_uniform':
         prior_distribution = tfp.distributions.Independent(
             tfp.distributions.Uniform(
-                low=[-1.] * self._skill_size, high=[1.] * self._skill_size),
+                low=[-1.] * self._latent_size, high=[1.] * self._latent_size),
             reinterpreted_batch_ndims=1)
 
         # squash posterior to the right range of [-1, 1]
@@ -105,14 +105,14 @@ class SkillDiscriminator:
         inference_distribution = tfp.distributions.TransformedDistribution(
             distribution=inference_distribution, bijector=bijector_chain)
 
-    elif self._skill_type == 'discrete_uniform':
+    elif self._latent_type == 'discrete_uniform':
       logits = tf.layers.dense(
-          out, self._skill_size, name='logits', reuse=tf.AUTO_REUSE)
+          out, self._latent_size, name='logits', reuse=tf.AUTO_REUSE)
       inference_distribution = tfp.distributions.OneHotCategorical(
           logits=logits)
       prior_distribution = tfp.distributions.OneHotCategorical(
-          probs=[1. / self._skill_size] * self._skill_size)
-    elif self._skill_type == 'multivariate_bernoulli':
+          probs=[1. / self._latent_size] * self._latent_size)
+    elif self._latent_type == 'multivariate_bernoulli':
       print('Not supported yet')
 
     return inference_distribution, prior_distribution
@@ -132,7 +132,7 @@ class SkillDiscriminator:
 
   def _get_dict(self,
                 input_steps,
-                target_skills,
+                target_latents,
                 input_next_steps=None,
                 batch_size=-1,
                 batch_norm=False):
@@ -142,13 +142,13 @@ class SkillDiscriminator:
       shuffled_batch = np.arange(len(input_steps))
 
     batched_input = input_steps[shuffled_batch, :]
-    batched_skills = target_skills[shuffled_batch, :]
+    batched_latents = target_latents[shuffled_batch, :]
     if self._input_type in ['diff', 'both']:
       batched_targets = input_next_steps[shuffled_batch, :]
 
     return_dict = {
         self.timesteps_pl: batched_input,
-        self.skills_pl: batched_skills,
+        self.latents_pl: batched_latents,
     }
 
     if self._input_type in ['diff', 'both']:
@@ -163,8 +163,8 @@ class SkillDiscriminator:
     with self._graph.as_default(), tf.variable_scope(self._scope_name):
       self.timesteps_pl = tf.placeholder(
           tf.float32, shape=(None, self._observation_size), name='timesteps_pl')
-      self.skills_pl = tf.placeholder(
-          tf.float32, shape=(None, self._skill_size), name='skills_pl')
+      self.latents_pl = tf.placeholder(
+          tf.float32, shape=(None, self._latent_size), name='latents_pl')
       if self._input_type in ['diff', 'both']:
         self.next_timesteps_pl = tf.placeholder(
             tf.float32,
@@ -199,13 +199,13 @@ class SkillDiscriminator:
 
   def build_graph(self,
                   timesteps=None,
-                  skills=None,
+                  latents=None,
                   next_timesteps=None,
                   is_training=None):
     with self._graph.as_default(), tf.variable_scope(self._scope_name):
       if self._use_placeholders:
         timesteps = self.timesteps_pl
-        skills = self.skills_pl
+        latents = self.latents_pl
         if self._input_type in ['diff', 'both']:
           next_timesteps = self.next_timesteps_pl
         if self._normalize_observations:
@@ -228,8 +228,8 @@ class SkillDiscriminator:
       inference_distribution, prior_distribution = self._default_graph(
           timesteps)
 
-      self.log_probability = inference_distribution.log_prob(skills)
-      self.prior_probability = prior_distribution.log_prob(skills)
+      self.log_probability = inference_distribution.log_prob(latents)
+      self.prior_probability = prior_distribution.log_prob(latents)
       return self.log_probability, self.prior_probability
 
   def increase_prob_op(self, learning_rate=3e-4):
@@ -253,7 +253,7 @@ class SkillDiscriminator:
   # only useful when training use placeholders, otherwise use ops directly
   def train(self,
             timesteps,
-            skills,
+            latents,
             next_timesteps=None,
             batch_size=512,
             num_steps=1,
@@ -271,19 +271,19 @@ class SkillDiscriminator:
           run_op,
           feed_dict=self._get_dict(
               timesteps,
-              skills,
+              latents,
               input_next_steps=next_timesteps,
               batch_size=batch_size,
               batch_norm=True))
 
-  def get_log_probs(self, timesteps, skills, next_timesteps=None):
+  def get_log_probs(self, timesteps, latents, next_timesteps=None):
     if not self._use_placeholders:
       return
 
     return self._session.run([self.log_probability, self.prior_probability],
                              feed_dict=self._get_dict(
                                  timesteps,
-                                 skills,
+                                 latents,
                                  input_next_steps=next_timesteps,
                                  batch_norm=False))
 
