@@ -108,9 +108,18 @@ flags.DEFINE_integer('run_train', 0, 'Train the agent')
 flags.DEFINE_integer('num_epochs', 500, 'Number of training epochs')
 
 # latent latent space
-flags.DEFINE_integer('num_latents', 2, 'Number of latents to learn')
+flags.DEFINE_integer('num_latents', 4, 'Number of latents to learn')
+flags.DEFINE_integer('num_skills', 2, 'Number of skills to learn')
+flags.DEFINE_integer('num_styles', 2, 'Number of styles to learn')
+flags.DEFINE_integer('num_sampling_steps', 2, 'Number of steps sampled from the dataset')
+flags.DEFINE_integer('prediction_after_n_steps', 1, 'prediction timestpes after n steps')
+
 flags.DEFINE_string('latent_type', 'cont_uniform',
                     'Type of latent and the prior over it')
+flags.DEFINE_string('skill_latent_type', 'cont_uniform',
+                    'Type of skill latent and the prior over it')
+flags.DEFINE_string('style_latent_type', 'cont_uniform',
+                    'Type of style latent and the prior over it')                                        
 flags.DEFINE_string('cont_uniform_method', 'random',
                     'Type of latent and the prior over it')
                     
@@ -314,23 +323,40 @@ def relabel_latent(trajectory_sample,
   global observation_omit_size
   if relabel_type is None or ('importance_sampling' in relabel_type and
                               FLAGS.is_clip_eps <= 1.0):
-    return trajectory_sample, None
+    
+    reduced_trajectory = nest.map_structure(lambda x: x[:, 0:2], trajectory_sample)                   
+    action_steps = policy_step.PolicyStep(
+        action=trajectory_sample.action, state=(), info=trajectory_sample.policy_info)
+    return reduced_trajectory, action_steps, None
 
   # trajectory.to_transition, but for numpy arrays
-  next_trajectory = nest.map_structure(lambda x: x[:, 1:], trajectory_sample)
+  if FLAGS.num_sampling_steps >=2:
+    next_trajectory = nest.map_structure(lambda x: x[:, 1:], trajectory_sample)
+  else:
+    print("number of sampled steps should be larger than 2.")
+    raise ValueError
   trajectory = nest.map_structure(lambda x: x[:, :-1], trajectory_sample)
-  action_steps = policy_step.PolicyStep(
-      action=trajectory.action, state=(), info=trajectory.policy_info)
+
   time_steps = ts.TimeStep(
       trajectory.step_type,
       reward=nest.map_structure(np.zeros_like, trajectory.reward),  # unknown
       discount=np.zeros_like(trajectory.discount),  # unknown
       observation=trajectory.observation)
+  #print("next time steps")
+  #input()      
   next_time_steps = ts.TimeStep(
       step_type=trajectory.next_step_type,
       reward=trajectory.reward,
       discount=trajectory.discount,
       observation=next_trajectory.observation)
+
+  action_steps = policy_step.PolicyStep(
+      action=trajectory_sample.action, state=(), info=trajectory_sample.policy_info)      
+  sequence_action_steps = action_steps
+
+  time_steps, action_steps, next_time_steps = nest.map_structure(
+      lambda t: t[:,0:1],
+      (time_steps, action_steps, next_time_steps))
   time_steps, action_steps, next_time_steps = nest.map_structure(
       lambda t: np.squeeze(t, axis=1),
       (time_steps, action_steps, next_time_steps))
@@ -341,11 +367,19 @@ def relabel_latent(trajectory_sample,
     is_weights = []
     for idx in range(time_steps.observation.shape[0]):
       cur_time_step = nest.map_structure(lambda x: x[idx:idx + 1], time_steps)
+
+      action_sequence = sequence_action_steps.action[idx:idx+1,:,:].reshape(1,-1)
+
       cur_time_step = cur_time_step._replace(
           observation=cur_time_step.observation[:, observation_omit_size:])
       old_log_prob = old_log_probs[idx]
       cur_log_prob = cur_policy.log_prob(cur_time_step,
-                                         action_steps.action[idx:idx + 1])[0]
+                                         action_steps.action[idx:idx + 1,:],
+                                         action_sequence=action_sequence)[0]
+      cur_action_step = nest.map_structure(lambda x: x[idx:idx + 1], sequence_action_steps)
+      cur_action_step = cur_action_step._replace(
+          action=cur_action_step.action.reshape(1,-1))
+      
       is_weights.append(
           np.clip(
               np.exp(cur_log_prob - old_log_prob), 1. / FLAGS.is_clip_eps,
@@ -354,9 +388,9 @@ def relabel_latent(trajectory_sample,
     is_weights = np.array(is_weights)
     if relabel_type == 'normalized_importance_sampling':
       is_weights = is_weights / is_weights.mean()
+    return trajectory_sample, sequence_action_steps, is_weights
 
-    return trajectory_sample, is_weights
-
+  # include action sequences to the observation
   new_observation = np.zeros(time_steps.observation.shape)
   for idx in range(time_steps.observation.shape[0]):
     alt_time_steps = nest.map_structure(
@@ -370,8 +404,8 @@ def relabel_latent(trajectory_sample,
           np.random.uniform(
               low=-1.0,
               high=1.0,
-              size=(FLAGS.num_samples_for_relabelling - 1, FLAGS.num_latents)),
-          alt_time_steps.observation[:1, -FLAGS.num_latents:]
+              size=(FLAGS.num_samples_for_relabelling - 1, FLAGS.num_skills)),
+          alt_time_steps.observation[:1, -FLAGS.num_latents:-FLAGS.num_styles]
       ])
 
     # choose the latent which gives the highest log-probability to the current action
@@ -388,7 +422,7 @@ def relabel_latent(trajectory_sample,
       action_log_probs = cur_policy.log_prob(alt_time_steps, cur_action)
       if FLAGS.debug_latent_relabelling:
         print('\n action_log_probs analysis----', idx,
-              time_steps.observation[idx, -FLAGS.num_latents:])
+              time_steps.observation[idx, -FLAGS.num_latents:-FLAGS.num_styles])
         print('number of latents with higher log-probs:',
               np.sum(action_log_probs >= action_log_probs[-1]))
         print('Latents with log-probs higher than actual latent:')
@@ -410,12 +444,12 @@ def relabel_latent(trajectory_sample,
           FLAGS.num_samples_for_relabelling)
 
       # max over posterior log probability is exactly the max over log-prob of transitin under latent-dynamics
-      posterior_log_probs = cur_latent_dynamics.get_log_prob(
+      posterior_log_probs = cur_latent_dynamics.get_nextstep_log_prob(
           process_observation(cur_observations), alt_latents,
           process_observation(next_observations))
       if FLAGS.debug_latent_relabelling:
         print('\n dynamics_log_probs analysis----', idx,
-              time_steps.observation[idx, -FLAGS.num_latents:])
+              time_steps.observation[idx, -FLAGS.num_latents:-FLAGS.num_styles])
         print('number of latents with higher log-probs:',
               np.sum(posterior_log_probs >= posterior_log_probs[-1]))
         print('Latents with log-probs higher than actual latent:')
@@ -440,7 +474,7 @@ def relabel_latent(trajectory_sample,
   new_trajectory_sample = trajectory_sample._replace(
       observation=traj_observation)
 
-  return new_trajectory_sample, None
+  return new_trajectory_sample, sequence_action_steps,  None
 
 
 # hard-coding the state-space for dynamics
@@ -474,6 +508,11 @@ def process_observation(observation):
   # x-y plane
   elif FLAGS.reduced_observation in [2, 6]:
     if FLAGS.environment == 'Ant-v1' or 'DKitty' in FLAGS.environment or 'DClaw' in FLAGS.environment:
+      red_obs = [
+          _shape_based_observation_processing(observation, 0),
+          _shape_based_observation_processing(observation, 1)
+      ]
+    elif FLAGS.environment == 'point_mass':
       red_obs = [
           _shape_based_observation_processing(observation, 0),
           _shape_based_observation_processing(observation, 1)
@@ -610,7 +649,6 @@ def collect_experience(py_env,
       'episode_return': extrinsic_reward
   }
 
-
 def run_on_env(env,
                policy,
                dynamics=None,
@@ -645,7 +683,7 @@ def run_on_env(env,
       if FLAGS.reduced_observation:
         cur_observation, next_observation = process_observation(
             cur_observation), process_observation(next_observation)
-      logp = dynamics.get_log_prob(
+      logp = dynamics.get_nextstep_log_prob(
           np.expand_dims(cur_observation, 0), np.expand_dims(cur_latent, 0),
           np.expand_dims(next_observation, 0))
 
@@ -696,45 +734,77 @@ def eval_loop(eval_dir,
 
   if plot_name is not None:
     # color_map = ['b', 'g', 'r', 'c', 'm', 'y', 'k']
-    color_map = ['b', 'g', 'r', 'c', 'm', 'y']
+    color_map = ['b', 'g', 'r', 'c']
     style_map = []
-    for line_style in ['-', '--', '-.', ':']:
-      style_map += [color + line_style for color in color_map]
-
+    for color in color_map:
+      style_map += [color + line_style for line_style in ['-', '--', '-.', ':']]
     plt.xlim(-15, 15)
     plt.ylim(-15, 15)
     # all_trajectories = []
     # all_predicted_trajectories = []
-
-  for idx in range(num_evals):
-    if FLAGS.num_latents > 0:
+  
+  # TODO: new evaluation method does not match the meaning of num_evals
+  for idx in range(num_evals*num_evals):
+    if FLAGS.num_skills > 0:
       if FLAGS.deterministic_eval:
-        preset_latent = np.zeros(FLAGS.num_latents, dtype=np.int64)
-        preset_latent[idx] = 1
-      elif FLAGS.latent_type == 'discrete_uniform':
-        preset_latent = np.random.multinomial(1, [1. / FLAGS.num_latents] *
-                                             FLAGS.num_latents)
-      elif FLAGS.latent_type == 'gaussian':
-        preset_latent = np.random.multivariate_normal(
-            np.zeros(FLAGS.num_latents), np.eye(FLAGS.num_latents))
-      elif FLAGS.latent_type == 'cont_uniform':
-        if FLAGS.cont_uniform_method == 'evenly' and FLAGS.num_latents == 1:
-          preset_latent = np.linspace(-1.0, 1.0, num_evals)[[idx]]
+        preset_skills_latent = np.zeros(FLAGS.num_skills, dtype=np.int64)
+        preset_skills_latent[idx] = 1
+      elif FLAGS.skill_latent_type == 'discrete_uniform':
+        preset_skills_latent = np.random.multinomial(1, [1. / FLAGS.num_skills] *
+                                             FLAGS.num_skills)
+      elif FLAGS.skill_latent_type == 'gaussian':
+        preset_skills_latent = np.random.multivariate_normal(
+            np.zeros(FLAGS.num_skills), np.eye(FLAGS.num_skills))
+      elif FLAGS.skill_latent_type == 'cont_uniform':
+        if FLAGS.cont_uniform_method == 'evenly' and FLAGS.num_skills == 1:
+          preset_skills_latent = np.repeat(np.linspace(-1.0, 1.0, num_evals),num_evals)[[idx]]
+          
+        elif FLAGS.cont_uniform_method == "fix_skills":
+          preset_skills_latent = np.array([0] * FLAGS.num_skills)
         else:
-          preset_latent = np.random.uniform(
-            low=-1.0, high=1.0, size=FLAGS.num_latents)
-      elif FLAGS.latent_type == 'multivariate_bernoulli':
-        preset_latent = np.random.binomial(1, 0.5, size=FLAGS.num_latents)
+          preset_skills_latent = np.random.uniform(
+            low=-1.0, high=1.0, size=FLAGS.num_skills)
+      elif FLAGS.skill_latent_type == 'multivariate_bernoulli':
+        preset_skills_latent = np.random.binomial(1, 0.5, size=FLAGS.num_skills)
     else:
-      preset_latent = None
+      preset_skills_latent = None
+
+    if FLAGS.num_styles > 0:
+      if FLAGS.deterministic_eval:
+        preset_styles_latent = np.zeros(FLAGS.num_styles, dtype=np.int64)
+        preset_styles_latent[idx] = 1
+      elif FLAGS.style_latent_type == 'discrete_uniform':
+        preset_styles_latent = np.random.multinomial(1, [1. / FLAGS.num_styles] *
+                                             FLAGS.num_styles)
+      elif FLAGS.style_latent_type == 'gaussian':
+        preset_styles_latent = np.random.multivariate_normal(
+            np.zeros(FLAGS.num_styles), np.eye(FLAGS.num_styles))
+      elif FLAGS.style_latent_type == 'cont_uniform':
+        if FLAGS.cont_uniform_method == 'evenly' and FLAGS.num_styles == 1:
+          preset_styles_latent = np.tile(np.linspace(-1.0, 1.0, num_evals),num_evals)[[idx]]
+        elif FLAGS.cont_uniform_method == "fix_skills":
+          preset_styles_latent = np.random.uniform(
+            low=-1.0, high=1.0, size=FLAGS.num_styles)
+        else:
+          preset_styles_latent = np.random.uniform(
+            low=-1.0, high=1.0, size=FLAGS.num_styles)
+      elif FLAGS.style_latent_type == 'multivariate_bernoulli':
+        preset_styles_latent = np.random.binomial(1, 0.5, size=FLAGS.num_styles)
+    else:
+      preset_styles_latent = None
 
     eval_env = get_environment(env_name=FLAGS.environment)
     eval_env = wrap_env(
         latent_wrapper.LatentWrapper(
             eval_env,
             num_latents=FLAGS.num_latents,
-            latent_type=FLAGS.latent_type,
-            preset_latent=preset_latent,
+            num_skills=FLAGS.num_skills,
+            num_styles=FLAGS.num_styles,
+            num_sampling_steps=FLAGS.num_sampling_steps,
+            skill_latent_type = FLAGS.skill_latent_type,
+            style_latent_type = FLAGS.style_latent_type,
+            preset_skills_latent = preset_skills_latent,
+            preset_styles_latent = preset_styles_latent,
             min_steps_before_resample=FLAGS.min_steps_before_resample,
             resample_prob=FLAGS.resample_prob),
         max_episode_steps=FLAGS.max_env_steps)
@@ -774,6 +844,7 @@ def eval_loop(eval_dir,
             trajectory_coordinates[:, 0],
             trajectory_coordinates[:, 1],
             style_map[idx % len(style_map)],
+            markersize=1,
             label=(str(idx) if eval_idx == 0 else None))
         # plt.plot(
         #     trajectory_coordinates[0, 0],
@@ -796,7 +867,7 @@ def eval_loop(eval_dir,
           for step_idx in range(len(eval_trajectory))
       ])
       metadata.write(
-          str(idx) + ' ' + str(preset_latent) + ' ' +
+          str(idx) + ' ' + str(preset_skills_latent) + ' '  + str(preset_styles_latent) + ' '+
           str(trajectory_coordinates[-1, :]) + '\n')
 
     # all_predicted_trajectories.append(
@@ -1089,6 +1160,7 @@ def main(_):
   logging.set_verbosity(logging.INFO)
   global observation_omit_size, goal_coord, sample_count, iter_count, episode_size_buffer, episode_return_buffer
 
+  assert (FLAGS.num_skills+FLAGS.num_styles) == FLAGS.num_latents, "Number of latents should be the addtiona of number of skills and styles."
   root_dir = os.path.abspath(os.path.expanduser(FLAGS.logdir))
   if not tf.io.gfile.exists(root_dir):
     tf.io.gfile.makedirs(root_dir)
@@ -1126,8 +1198,11 @@ def main(_):
         latent_wrapper.LatentWrapper(
             py_env,
             num_latents=FLAGS.num_latents,
-            latent_type=FLAGS.latent_type,
-            preset_latent=None,
+            num_skills=FLAGS.num_skills,
+            num_styles=FLAGS.num_styles,
+            num_sampling_steps=FLAGS.num_sampling_steps,
+            skill_latent_type = FLAGS.skill_latent_type,
+            style_latent_type = FLAGS.style_latent_type,
             min_steps_before_resample=FLAGS.min_steps_before_resample,
             resample_prob=FLAGS.resample_prob),
         max_episode_steps=FLAGS.max_env_steps)
@@ -1183,7 +1258,11 @@ def main(_):
         observation_modify_fn=process_observation,
         restrict_input_size=observation_omit_size,
         latent_size=FLAGS.num_latents,
-        latent_prior=FLAGS.latent_type,
+        latent_vars=(FLAGS.num_skills,FLAGS.num_styles),
+        skill_latent_prior=FLAGS.skill_latent_type,
+        style_latent_prior=FLAGS.style_latent_type,
+        env_action_space=py_env.action_space.shape[0],
+        num_sampling_steps=FLAGS.num_sampling_steps,
         prior_samples=FLAGS.random_latents,
         fc_layer_params=(FLAGS.hidden_layer_size,) * 2,
         normalize_observations=FLAGS.normalize_data,
@@ -1361,19 +1440,18 @@ def main(_):
           # only for debugging latent relabelling
           if iter_count >= 1 and FLAGS.debug_latent_relabelling:
             trajectory_sample = rbuffer.get_next(
-                sample_batch_size=5, num_steps=2)
+                sample_batch_size=5, num_steps=FLAGS.num_sampling_steps)
             trajectory_sample = _filter_trajectories(trajectory_sample)
             # trajectory_sample, _ = relabel_latent(
             #     trajectory_sample,
             #     relabel_type='policy',
             #     cur_policy=relabel_policy,
             #     cur_latent_dynamics=agent.latent_dynamics)
-            trajectory_sample, is_weights = relabel_latent(
+            trajectory_sample, action_sequences, is_weights = relabel_latent(
                 trajectory_sample,
                 relabel_type='importance_sampling',
                 cur_policy=relabel_policy,
                 cur_latent_dynamics=agent.latent_dynamics)
-            print(is_weights)
 
           latent_dynamics_buffer = rbuffer
           if FLAGS.train_latent_dynamics_on_policy:
@@ -1386,25 +1464,32 @@ def main(_):
               trajectory_sample = rbuffer.gather_all_transitions()
             else:
               trajectory_sample = latent_dynamics_buffer.get_next(
-                  sample_batch_size=FLAGS.latent_dyn_batch_size, num_steps=2)
+                  sample_batch_size=FLAGS.latent_dyn_batch_size, num_steps=FLAGS.num_sampling_steps)
             trajectory_sample = _filter_trajectories(trajectory_sample)
 
             # is_weights is None usually, unless relabelling involves importance_sampling
-            trajectory_sample, is_weights = relabel_latent(
+            #WARNING relabel_latent should provide right datatype
+            trajectory_sample, action_sequences, is_weights = relabel_latent(
                 trajectory_sample,
                 relabel_type=FLAGS.latent_dynamics_relabel_type,
                 cur_policy=relabel_policy,
                 cur_latent_dynamics=agent.latent_dynamics)
             input_obs = process_observation(
                 trajectory_sample.observation[:, 0, :-FLAGS.num_latents])
-            cur_latent = trajectory_sample.observation[:, 0, -FLAGS.num_latents:]
+            cur_latent = trajectory_sample.observation[:, 0, -FLAGS.num_latents:-FLAGS.num_styles]
             target_obs = process_observation(
                 trajectory_sample.observation[:, 1, :-FLAGS.num_latents])
+
+            
+            action_sequences = action_sequences.action.reshape(action_sequences.action.shape[0],-1)
+
+            
             if FLAGS.clear_buffer_every_iter:
               agent.latent_dynamics.train(
                   input_obs,
                   cur_latent,
                   target_obs,
+                  action_sequences,
                   batch_size=FLAGS.latent_dyn_batch_size,
                   batch_weights=is_weights,
                   num_steps=FLAGS.latent_dyn_train_steps)
@@ -1413,6 +1498,7 @@ def main(_):
                   input_obs,
                   cur_latent,
                   target_obs,
+                  action_sequences,
                   batch_size=-1,
                   batch_weights=is_weights,
                   num_steps=1)
@@ -1424,18 +1510,20 @@ def main(_):
           print('latent_dynamics train time:',
                 latent_dynamics_end_train_time - collect_end_time)
 
-          running_dads_reward, running_logp, running_logp_altz = [], [], []
+          running_logp, running_logp_altz, running_logq_tau= [], [], []
+          running_skill_reward, running_style_reward = [],[]
 
           # agent train loop analysis
           within_agent_train_time = time.time()
           sampling_time_arr, filtering_time_arr, relabelling_time_arr, train_time_arr = [], [], [], []
+
           for _ in range(
               1 if FLAGS.clear_buffer_every_iter else FLAGS.agent_train_steps):
             if FLAGS.clear_buffer_every_iter:
               trajectory_sample = rbuffer.gather_all_transitions()
             else:
               trajectory_sample = rbuffer.get_next(
-                  sample_batch_size=FLAGS.agent_batch_size, num_steps=2)
+                  sample_batch_size=FLAGS.agent_batch_size, num_steps=FLAGS.num_sampling_steps)
 
             buffer_sampling_time = time.time()
             sampling_time_arr.append(buffer_sampling_time -
@@ -1444,7 +1532,7 @@ def main(_):
 
             filtering_time = time.time()
             filtering_time_arr.append(filtering_time - buffer_sampling_time)
-            trajectory_sample, _ = relabel_latent(
+            trajectory_sample, action_sequences, _ = relabel_latent(
                 trajectory_sample,
                 relabel_type=FLAGS.agent_relabel_type,
                 cur_policy=relabel_policy,
@@ -1455,16 +1543,19 @@ def main(_):
             # need to match the assert structure
             if FLAGS.latent_dynamics_relabel_type is not None and 'importance_sampling' in FLAGS.latent_dynamics_relabel_type:
               trajectory_sample = trajectory_sample._replace(policy_info=())
-
+            
+            action_sequences = action_sequences.action.reshape(action_sequences.action.shape[0],-1)
             if not FLAGS.clear_buffer_every_iter:
               dads_reward, info = agent.train_loop(
                   trajectory_sample,
+                  action_sequences,
                   recompute_reward=True,  # turn False for normal SAC training
                   batch_size=-1,
                   num_steps=1)
             else:
               dads_reward, info = agent.train_loop(
                   trajectory_sample,
+                  action_sequences,
                   recompute_reward=True,  # turn False for normal SAC training
                   batch_size=FLAGS.agent_batch_size,
                   num_steps=FLAGS.agent_train_steps)
@@ -1472,9 +1563,11 @@ def main(_):
             within_agent_train_time = time.time()
             train_time_arr.append(within_agent_train_time - relabelling_time)
             if dads_reward is not None:
-              running_dads_reward.append(dads_reward)
+              running_skill_reward.append(dads_reward['skill_reward'])
+              running_style_reward.append(dads_reward['style_reward'])
               running_logp.append(info['logp'])
               running_logp_altz.append(info['logp_altz'])
+              running_logq_tau.append(info['logq_tau'])
 
           agent_end_train_time = time.time()
           print('agent train time:',
@@ -1501,11 +1594,17 @@ def main(_):
           train_writer.add_summary(
               tf.compat.v1.Summary(value=[
                   tf.compat.v1.Summary.Value(
-                      tag='dads/reward',
+                      tag='dads/skill_reward',
                       simple_value=np.mean(
-                          np.concatenate(running_dads_reward)))
+                          np.concatenate(running_skill_reward)))
               ]), sample_count)
-
+          train_writer.add_summary(
+              tf.compat.v1.Summary(value=[
+                  tf.compat.v1.Summary.Value(
+                      tag='dads/style_reward',
+                      simple_value=np.mean(
+                          np.concatenate(running_style_reward)))
+              ]), sample_count)
           train_writer.add_summary(
               tf.compat.v1.Summary(value=[
                   tf.compat.v1.Summary.Value(
@@ -1517,6 +1616,12 @@ def main(_):
                   tf.compat.v1.Summary.Value(
                       tag='dads/logp_altz',
                       simple_value=np.mean(np.concatenate(running_logp_altz)))
+              ]), sample_count)
+          train_writer.add_summary(
+              tf.compat.v1.Summary(value=[
+                  tf.compat.v1.Summary.Value(
+                      tag='dads/logq_tau',
+                      simple_value=np.mean(np.concatenate(running_logq_tau)))
               ]), sample_count)
 
           if FLAGS.clear_buffer_every_iter:

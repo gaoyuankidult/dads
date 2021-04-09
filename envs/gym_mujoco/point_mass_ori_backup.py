@@ -65,8 +65,8 @@ class PointMassEnv(mujoco_env.MujocoEnv, utils.EzPickle):
       ori = qpos[2]
       dx = math.cos(ori) * force
       dy = math.sin(ori) * force
-      qpos[0] = np.clip(qpos[0] + dx, -15, 15)
-      qpos[1] = np.clip(qpos[1] + dy, -15, 15)
+      qpos[0] = np.clip(qpos[0] + dx, -2, 2)
+      qpos[1] = np.clip(qpos[1] + dy, -2, 2)
       qvel = self.sim.data.qvel.flat.copy()
       self.set_state(qpos, qvel)
 
@@ -106,4 +106,4 @@ class PointMassEnv(mujoco_env.MujocoEnv, utils.EzPickle):
     self.set_state(state, qvel)
 
   def viewer_setup(self):
-    self.viewer.cam.distance = self.model.stat.extent * 2.5
+    self.viewer.cam.distance = self.model.stat.extent * 0.5

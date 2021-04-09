@@ -30,7 +30,10 @@ class LatentDynamics:
   def __init__(
       self,
       observation_size,
-      action_size,
+      latent_size,
+      latent_vars,
+      env_action_space,
+      num_sampling_steps,
       restrict_observation=0,
       normalize_observations=False,
       # network properties
@@ -43,11 +46,14 @@ class LatentDynamics:
       scope_name='latent_dynamics'):
 
     self._observation_size = observation_size
-    self._action_size = action_size
+    self._latent_size = latent_size
     self._normalize_observations = normalize_observations
     self._restrict_observation = restrict_observation
     self._reweigh_batches = reweigh_batches
 
+    self._num_skills, self._num_styles = latent_vars
+    self._env_action_space = env_action_space
+    self._num_sampling_steps = num_sampling_steps
     # tensorflow requirements
     if graph is not None:
       self._graph = graph
@@ -65,7 +71,7 @@ class LatentDynamics:
       self._std_upper_clip = 10.0
 
     self._use_placeholders = False
-    self.log_probability = None
+    self.nextstep_log_probability = None
     self.dyn_max_op = None
     self.dyn_min_op = None
     self._session = None
@@ -73,6 +79,23 @@ class LatentDynamics:
 
     # saving/restoring variables
     self._saver = None
+
+  def _get_k_distribution(self, out):
+    mean = tf.compat.v1.layers.dense(
+        out, self._observation_size, name='mean', reuse=tf.compat.v1.AUTO_REUSE)
+    if not self._fix_variance:
+      stddev = tf.clip_by_value(
+          tf.compat.v1.layers.dense(
+              out,
+              self._observation_size,
+              activation=tf.nn.softplus,
+              name='stddev',
+              reuse=tf.compat.v1.AUTO_REUSE), self._std_lower_clip,
+          self._std_upper_clip)
+    else:
+      stddev = tf.fill([tf.shape(out)[0], self._observation_size], 1.0)
+    return tfp.distributions.MultivariateNormalDiag(
+        loc=mean, scale_diag=stddev)
 
   def _get_distribution(self, out):
     if self._num_components > 1:
@@ -161,19 +184,31 @@ class LatentDynamics:
     return self._get_distribution(out)
 
   # simple dynamics graph
-  def _default_graph(self, timesteps, actions):
-    out = tf.concat([timesteps, actions], axis=1)
+  def _default_graph(self, timesteps, skills, styles, action_sequence):
+    skills_obs = tf.concat([timesteps, skills], axis=1)
     for idx, layer_size in enumerate(self._fc_layer_params):
-      out = tf.compat.v1.layers.dense(
-          out,
+      skills_obs = tf.compat.v1.layers.dense(
+          skills_obs,
           layer_size,
           activation=tf.nn.relu,
           name='hid_' + str(idx),
           reuse=tf.compat.v1.AUTO_REUSE)
+    
+    styles_obs = tf.concat([action_sequence], axis=1)
+    for idx, layer_size in enumerate(self._fc_layer_params):
+      #print(layer_size)
+      #input()
+      styles_obs = tf.compat.v1.layers.dense(
+          styles_obs,
+          layer_size,
+          activation=tf.nn.relu,
+          name='hid_style_' + str(idx),
+          reuse=tf.compat.v1.AUTO_REUSE)
+    
 
-    return self._get_distribution(out)
+    return self._get_distribution(skills_obs), self._get_k_distribution(styles_obs)
 
-  def _get_dict(self,
+  def _get_nextstep_log_dict(self,
                 input_data,
                 input_actions,
                 target_data,
@@ -190,8 +225,9 @@ class LatentDynamics:
     # if we are noising the input, it is better to create a new copy of the numpy arrays
     batched_input = input_data[shuffled_batch, :]
     batched_latents = input_actions[shuffled_batch, :]
+    batched_skills = batched_latents[:,:self._num_skills]
+    batched_styles = batched_latents[:,-self._num_styles:]
     batched_targets = target_data[shuffled_batch, :]
-
     if self._reweigh_batches and batch_weights is not None:
       example_weights = batch_weights[shuffled_batch]
 
@@ -200,15 +236,87 @@ class LatentDynamics:
 
     return_dict = {
         self.timesteps_pl: batched_input,
-        self.actions_pl: batched_latents,
-        self.next_timesteps_pl: batched_targets
+        self.skills_pl: batched_skills,
+        self.next_timesteps_pl: batched_targets,
     }
     if self._normalize_observations:
       return_dict[self.is_training_pl] = batch_norm
     if self._reweigh_batches and batch_weights is not None:
       return_dict[self.batch_weights] = example_weights
 
-    return return_dict
+    return return_dict         
+
+
+  def _get_style_log_dict(self,
+                styles,
+                action_sequences,                
+                batch_size=-1,
+                batch_weights=None,
+                batch_norm=False,
+                noise_targets=False,
+                noise_std=0.5):
+    if batch_size > 0:
+      shuffled_batch = np.random.permutation(len(styles))[:batch_size]
+    else:
+      shuffled_batch = np.arange(len(styles))
+    batched_styles = styles[shuffled_batch, :]
+    batched_action_sequences = action_sequences[shuffled_batch, :]
+    if self._reweigh_batches and batch_weights is not None:
+      example_weights = batch_weights[shuffled_batch]
+
+    return_dict = {
+        self.styles_pl: batched_styles,
+        self.action_sequences_pl:batched_action_sequences
+    }
+    if self._normalize_observations:
+      return_dict[self.is_training_pl] = batch_norm
+    if self._reweigh_batches and batch_weights is not None:
+      return_dict[self.batch_weights] = example_weights
+
+    return return_dict          
+
+  def _get_dict(self,
+                input_data,
+                input_actions,
+                target_data,
+                action_sequences,
+                batch_size=-1,
+                batch_weights=None,
+                batch_norm=False,
+                noise_targets=False,
+                noise_std=0.5):
+    if batch_size > 0:
+      shuffled_batch = np.random.permutation(len(input_data))[:batch_size]
+    else:
+      shuffled_batch = np.arange(len(input_data))
+
+    # if we are noising the input, it is better to create a new copy of the numpy arrays
+    batched_input = input_data[shuffled_batch, :]
+    batched_latents = input_actions[shuffled_batch, :]
+    batched_skills = batched_latents[:,:self._num_skills]
+    batched_styles = batched_latents[:,-self._num_styles:]
+    batched_targets = target_data[shuffled_batch, :]
+    nums_x, nums_y = action_sequences.shape
+    batched_action_sequences = action_sequences[shuffled_batch, :]
+    if self._reweigh_batches and batch_weights is not None:
+      example_weights = batch_weights[shuffled_batch]
+    if noise_targets:
+      batched_targets += np.random.randn(*batched_targets.shape) * noise_std
+
+    return_dict = {
+        self.timesteps_pl: batched_input,
+        self.skills_pl : batched_skills,
+        self.styles_pl : batched_styles,
+        #self.actions_pl: batched_latents,
+        self.next_timesteps_pl: batched_targets,
+        self.action_sequences_pl: batched_action_sequences
+    }
+    if self._normalize_observations:
+      return_dict[self.is_training_pl] = batch_norm
+    if self._reweigh_batches and batch_weights is not None:
+      return_dict[self.batch_weights] = example_weights
+
+    return return_dict           
 
   def _get_run_dict(self, input_data, input_actions):
     return_dict = {
@@ -225,8 +333,16 @@ class LatentDynamics:
     with self._graph.as_default(), tf.compat.v1.variable_scope(self._scope_name):
       self.timesteps_pl = tf.compat.v1.placeholder(
           tf.float32, shape=(None, self._observation_size), name='timesteps_pl')
-      self.actions_pl = tf.compat.v1.placeholder(
-          tf.float32, shape=(None, self._action_size), name='actions_pl')
+
+      self.skills_pl = tf.compat.v1.placeholder(
+          tf.float32, shape=(None, self._num_skills), name='skills_pl')
+
+      self.styles_pl = tf.compat.v1.placeholder(
+          tf.float32, shape=(None, self._num_styles), name='styles_pl')      
+
+      self.action_sequences_pl = tf.compat.v1.placeholder(
+          tf.float32, shape=(None, self._env_action_space* self._num_sampling_steps ), name='action_sequences_pl')      
+
       self.next_timesteps_pl = tf.compat.v1.placeholder(
           tf.float32,
           shape=(None, self._observation_size),
@@ -265,13 +381,18 @@ class LatentDynamics:
                   timesteps=None,
                   actions=None,
                   next_timesteps=None,
+                  acion_sequences=None,
                   is_training=None):
     with self._graph.as_default(), tf.compat.v1.variable_scope(
         self._scope_name, reuse=tf.compat.v1.AUTO_REUSE):
+      #self.actions_pl = tf.concat([self.skills_pl, self.styles_pl],axis=1)  
+      self.actions_pl =self.skills_pl
       if self._use_placeholders:
         timesteps = self.timesteps_pl
-        actions = self.actions_pl
+        skills = self.skills_pl
+        styles = self.styles_pl
         next_timesteps = self.next_timesteps_pl
+        acion_sequences = self.action_sequences_pl
         if self._normalize_observations:
           is_training = self.is_training_pl
 
@@ -293,16 +414,17 @@ class LatentDynamics:
             next_timesteps, training=is_training)
 
       if self._network_type == 'default':
-        self.base_distribution = self._default_graph(timesteps, actions)
+        self.base_distribution, self.style_distribution = self._default_graph(timesteps, skills, styles, acion_sequences)
       elif self._network_type == 'separate':
         self.base_distribution = self._graph_with_separate_latent_pipe(
-            timesteps, actions)
+            timesteps, skills)
 
       # if building multiple times, be careful about which log_prob you are optimizing
-      self.log_probability = self.base_distribution.log_prob(next_timesteps)
+      self.style_probability = self.style_distribution.log_prob(styles)
+      self.nextstep_log_probability = self.base_distribution.log_prob(next_timesteps)
       self.mean = self.base_distribution.mean()
 
-      return self.log_probability
+      return self.nextstep_log_probability
 
   def increase_prob_op(self, learning_rate=3e-4, weights=None):
     with self._graph.as_default():
@@ -311,17 +433,20 @@ class LatentDynamics:
         if self._reweigh_batches:
           self.dyn_max_op = tf.compat.v1.train.AdamOptimizer(
               learning_rate=learning_rate,
-              name='adam_max').minimize(-tf.reduce_mean(self.log_probability *
+              name='adam_max').minimize(-tf.reduce_mean(self.nextstep_log_probability *
+                                                        self.batch_weights) - tf.reduce_mean(self.style_probability *
                                                         self.batch_weights))
         elif weights is not None:
+          raise ValueError
           self.dyn_max_op = tf.compat.v1.train.AdamOptimizer(
               learning_rate=learning_rate,
-              name='adam_max').minimize(-tf.reduce_mean(self.log_probability *
+              name='adam_max').minimize(-tf.reduce_mean(self.nextstep_log_probability *
                                                         weights))
         else:
+          raise ValueError
           self.dyn_max_op = tf.compat.v1.train.AdamOptimizer(
               learning_rate=learning_rate,
-              name='adam_max').minimize(-tf.reduce_mean(self.log_probability))
+              name='adam_max').minimize(-tf.reduce_mean(self.nextstep_log_probability))
 
         return self.dyn_max_op
 
@@ -332,15 +457,15 @@ class LatentDynamics:
         if self._reweigh_batches:
           self.dyn_min_op = tf.compat.v1.train.AdamOptimizer(
               learning_rate=learning_rate, name='adam_min').minimize(
-                  tf.reduce_mean(self.log_probability * self.batch_weights))
+                  tf.reduce_mean(self.nextstep_log_probability * self.batch_weights))
         elif weights is not None:
           self.dyn_min_op = tf.compat.v1.train.AdamOptimizer(
               learning_rate=learning_rate, name='adam_min').minimize(
-                  tf.reduce_mean(self.log_probability * weights))
+                  tf.reduce_mean(self.nextstep_log_probability * weights))
         else:
           self.dyn_min_op = tf.compat.v1.train.AdamOptimizer(
               learning_rate=learning_rate,
-              name='adam_min').minimize(tf.reduce_mean(self.log_probability))
+              name='adam_min').minimize(tf.reduce_mean(self.nextstep_log_probability))
         return self.dyn_min_op
 
   def create_saver(self, save_prefix):
@@ -374,6 +499,7 @@ class LatentDynamics:
             timesteps,
             actions,
             next_timesteps,
+            action_sequences,
             batch_weights=None,
             batch_size=512,
             num_steps=1,
@@ -393,18 +519,26 @@ class LatentDynamics:
               timesteps,
               actions,
               next_timesteps,
+              action_sequences,
               batch_weights=batch_weights,
               batch_size=batch_size,
               batch_norm=True))
 
-  def get_log_prob(self, timesteps, actions, next_timesteps):
+  def get_nextstep_log_prob(self, timesteps, actions, next_timesteps):
     if not self._use_placeholders:
       return
 
     return self._session.run(
-        self.log_probability,
-        feed_dict=self._get_dict(
+        self.nextstep_log_probability,
+        feed_dict=self._get_nextstep_log_dict(
             timesteps, actions, next_timesteps, batch_norm=False))
+
+  def get_style_log_prob(self, styles, action_sequences):
+    if not self._use_placeholders:
+      return
+    return self._session.run(
+        self.style_probability,
+        feed_dict=self._get_style_log_dict(styles, action_sequences, batch_norm=False))
 
   def predict_state(self, timesteps, actions):
     if not self._use_placeholders:

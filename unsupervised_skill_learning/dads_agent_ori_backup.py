@@ -144,7 +144,8 @@ class DADSAgent(sac_agent.SacAgent):
         np.clip(logp_altz - logp.reshape(1, -1), -50, 50)).sum(axis=0))
 
     return intrinsic_reward, {'logp': logp, 'logp_altz': logp_altz.flatten()}
-
+  def compute_skill_reward(self, input_obs, cur_latent, target_obs):
+    pass
   def get_experience_placeholder(self):
     self._placeholders_in_place = True
     self._placeholders = []
@@ -218,6 +219,8 @@ class DADSAgent(sac_agent.SacAgent):
       target_obs = trajectories.observation[:, 1, :-self._latent_size]
       new_reward, info = self.compute_dads_reward(input_obs, cur_latent,
                                                   target_obs)
+      # compute skill reward
+
       trajectories = trajectories._replace(
           reward=np.concatenate(
               [np.expand_dims(new_reward, axis=1), trajectories.reward[:, 1:]],

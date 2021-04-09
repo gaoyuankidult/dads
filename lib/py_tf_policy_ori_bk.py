@@ -28,12 +28,6 @@ from tf_agents.utils import common
 from tf_agents.utils import nest_utils
 from tf_agents.utils import session_utils
 
-from tf_agents.specs import BoundedTensorSpec
-from tf_agents.specs import TensorSpec
-from tf_agents.trajectories import time_step
-
-import numpy as np
-
 
 class PyTFPolicy(py_policy.Base, session_utils.SessionUser):
   """Exposes a Python policy as wrapper over a TF Policy."""
@@ -76,84 +70,44 @@ class PyTFPolicy(py_policy.Base, session_utils.SessionUser):
     self._seed = seed
     self._built = False
 
-  def _construct(self, batch_size, action_sequence, graph):
+  def _construct(self, batch_size, graph):
     """Construct the agent graph through placeholders."""
 
     self._batch_size = batch_size
     self._batched = batch_size is not None
 
     outer_dims = [self._batch_size] if self._batched else [1]
-
-    if not batch_size:
-      # observation_1:0
-      with graph.as_default():
-        self._time_step = tensor_spec.to_nest_placeholder(
-            self._tf_policy.time_step_spec, outer_dims=outer_dims)            
-        self._tf_initial_state = self._tf_policy.get_initial_state(
-            batch_size=self._batch_size or 1)
-        self._policy_state = tf.nest.map_structure(
-            lambda ps: tf.compat.v1.placeholder(  # pylint: disable=g-long-lambda
-                ps.dtype,
-                ps.shape,
-                name='policy_state'),
-            self._tf_initial_state)
-        self._action_step = self._tf_policy.action(
-            self._time_step, self._policy_state, seed=self._seed)
-
-        self._actions = tensor_spec.to_nest_placeholder(
-            self._tf_policy.action_spec, outer_dims=outer_dims)
-        self._action_distribution = self._tf_policy.distribution(
-            self._time_step, policy_state=self._policy_state).action         
-        self._log_prob = common.log_probability(self._action_distribution,
-                                                self._actions,
-                                                self._tf_policy.action_spec)
-    else:
-      with graph.as_default():
-
-        # observation_2:0
-
-        _time_step = tensor_spec.to_nest_placeholder(
+    with graph.as_default():
+      self._time_step = tensor_spec.to_nest_placeholder(
           self._tf_policy.time_step_spec, outer_dims=outer_dims)
-        num_action_obs = len(action_sequence[0])
-        sequence_action_spec = time_step.TimeStep(step_type=TensorSpec(shape=(), dtype=np.int32, name='step_type'), 
-                                        reward=TensorSpec(shape=(), dtype=np.float32, name='reward'), 
-                                        discount=BoundedTensorSpec(shape=(), dtype=np.float32, name='discount', minimum=np.array(0., dtype=np.float32), maximum=np.array(1., dtype=np.float32)), 
-                                        observation= BoundedTensorSpec((_time_step.observation.shape[1],), np.float64, name='sequence_observation', 
-                                                                      minimum=np.array(-3.4028235e+38, dtype=np.float32), maximum=np.array(3.4028235e+38, dtype=np.float32)))  
-        
-        self._action_time_step = tensor_spec.to_nest_placeholder(
-          sequence_action_spec, outer_dims=outer_dims) 
-        self._time_step = self._action_time_step
-                
-        self._tf_initial_state = self._tf_policy.get_initial_state(
-            batch_size=self._batch_size or 1)
-        self._policy_state = tf.nest.map_structure(
-            lambda ps: tf.compat.v1.placeholder(  # pylint: disable=g-long-lambda
-                ps.dtype,
-                ps.shape,
-                name='policy_state'),
-            self._tf_initial_state)
+      self._tf_initial_state = self._tf_policy.get_initial_state(
+          batch_size=self._batch_size or 1)
 
-        self._action_step = self._tf_policy.action(
-            self._time_step, self._policy_state, seed=self._seed)
+      self._policy_state = tf.nest.map_structure(
+          lambda ps: tf.compat.v1.placeholder(  # pylint: disable=g-long-lambda
+              ps.dtype,
+              ps.shape,
+              name='policy_state'),
+          self._tf_initial_state)
+      self._action_step = self._tf_policy.action(
+          self._time_step, self._policy_state, seed=self._seed)
 
-        self._actions = tensor_spec.to_nest_placeholder(
-            self._tf_policy.action_spec, outer_dims=outer_dims)
+      self._actions = tensor_spec.to_nest_placeholder(
+          self._tf_policy.action_spec, outer_dims=outer_dims)
+      self._action_distribution = self._tf_policy.distribution(
+          self._time_step, policy_state=self._policy_state).action
+      self._log_prob = common.log_probability(self._action_distribution,
+                                              self._actions,
+                                              self._tf_policy.action_spec)
 
-        self._action_distribution = self._tf_policy.distribution(
-            self._time_step, policy_state=self._policy_state).action         
-        self._log_prob = common.log_probability(self._action_distribution,
-                                                self._actions,
-                                                self._tf_policy.action_spec)
-
-  def initialize(self, batch_size, action_sequence=None, graph=None):
+  def initialize(self, batch_size, graph=None):
     if self._built:
       raise RuntimeError('PyTFPolicy can only be initialized once.')
 
     if not graph:
       graph = tf.compat.v1.get_default_graph()
 
-    self._construct(batch_size, action_sequence, graph)
+    self._construct(batch_size, graph)
     var_list = tf.nest.flatten(self._tf_policy.variables())
     common.initialize_uninitialized_variables(self.session, var_list)
     self._built = True
@@ -209,12 +163,11 @@ class PyTFPolicy(py_policy.Base, session_utils.SessionUser):
         status.run_restore_ops()
       return self.session.run(global_step)
 
-  def _build_from_time_step(self, time_step, action_sequence=None):
+  def _build_from_time_step(self, time_step):
     outer_shape = nest_utils.get_outer_array_shape(time_step,
                                                    self._time_step_spec)
-    # This condition means we have a policy net
     if len(outer_shape) == 1:
-      self.initialize(outer_shape[0], action_sequence)
+      self.initialize(outer_shape[0])
     elif not outer_shape:
       self.initialize(None)
     else:
@@ -267,22 +220,12 @@ class PyTFPolicy(py_policy.Base, session_utils.SessionUser):
 
     return policy_step.PolicyStep(action, state, info)
 
-  def log_prob(self, time_step, action_step, action_sequence=None, policy_state=None):
+  def log_prob(self, time_step, action_step, policy_state=None):
     if not self._built:
-      self._build_from_time_step(time_step,action_sequence)
+      self._build_from_time_step(time_step)
     tf.nest.assert_same_structure(self._time_step, time_step)
     tf.nest.assert_same_structure(self._actions, action_step)
-    if action_sequence is None: 
-      feed_dict = {self._time_step: time_step, self._actions: action_step}
-      if policy_state is not None:
-        feed_dict[self._policy_state] = policy_state
-      return self.session.run(self._log_prob, feed_dict)
-    else:
-      #new_obs = np.concatenate([time_step.observation, \
-      #  action_sequence], axis=1)
-      #time_step = time_step._replace(
-      #    observation=new_obs)      
-      feed_dict = {self._time_step: time_step, self._actions: action_step}
-      if policy_state is not None:
-        feed_dict[self._policy_state] = policy_state
-      return self.session.run(self._log_prob, feed_dict)      
+    feed_dict = {self._time_step: time_step, self._actions: action_step}
+    if policy_state is not None:
+      feed_dict[self._policy_state] = policy_state
+    return self.session.run(self._log_prob, feed_dict)

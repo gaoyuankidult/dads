@@ -168,12 +168,6 @@ class AntEnv(mujoco_env.MujocoEnv, utils.EzPickle):
     qvel[14:] = 0.
 
     self.set_state(qpos, qvel)
-
-    poses = np.random.randint(-5,high=5,size=4)
-    self.sim.model.geom_pos[1] = np.array([[poses[0], 5, 0]])
-    self.sim.model.geom_pos[2] = np.array([5, poses[1], 0])
-    self.sim.model.geom_pos[3] = np.array([-5, poses[2], 0])
-    self.sim.model.geom_pos[4] = np.array([poses[3],-5,0])
     
     return self._get_obs()
 

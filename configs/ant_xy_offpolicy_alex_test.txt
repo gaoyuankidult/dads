@@ -28,7 +28,7 @@
 --clear_buffer_every_iter=0
 --initial_collect_steps=2000
 --collect_steps=500
---num_epochs=4000
+--num_epochs=12000
 
 # latent dynamics optimization hyperparameters
 --latent_dyn_train_steps=8
@@ -55,17 +55,30 @@
 --train_latent_dynamics_on_policy=0
 
 ### SHARED HYPERPARAMETERS ---------------------
---environment=Ant-v1
---max_env_steps=200
+--environment=point_mass
+--max_env_steps=100
+# this decide processed dimension
 --reduced_observation=2
 
 # define the type of latents being learnt
---num_latents=1
 --latent_type=cont_uniform
+--skill_latent_type=cont_uniform
+--style_latent_type=cont_uniform
 --random_latents=100
---num_evals=10
+--num_evals=4
+
+--num_latents=2
+--num_skills=1
+--num_styles=1
+
+--prediction_after_n_steps = 1
+
+# number of steps for sampling
+# TODO: The steps at the end of the trajectory may have less probability to be sampled.
+--num_sampling_steps=20
+
 # this parameter only works when the latent_type is cont_uniform. it will make the evaluation evenly sample the uniform distribution 
---cont_uniform_method=evenly  
+--cont_uniform_method=evenly
 
 
 # (optional) policy, critic and latent dynamics
